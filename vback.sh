@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# vback - 优雅的服务器备份工具 v1.1.0
+# vback - 优雅的服务器备份工具 v1.2.0
 # Elegant Server Backup Tool
 # 
 # 更方便，更省心 | Effortless & Worry-free
@@ -13,10 +13,11 @@
 # 📜 License: MIT
 # ============================================================================
 
-
-VERSION="1.1.0"
+VERSION="1.2.0"
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
+GITHUB_URL="https://github.com/caigg188/vback"
+RAW_SCRIPT_URL="https://raw.githubusercontent.com/caigg188/vback/main/vback.sh"
 
 # ========================= 数据目录 =========================
 DATA_DIR="${VBACK_DATA_DIR:-$HOME/.vback}"
@@ -199,6 +200,10 @@ load_lang_en() {
     L[menu_reconfig_desc]="Run setup wizard"
     L[menu_lang]="Language"
     L[menu_lang_desc]="Change language"
+    L[menu_update]="Update"
+    L[menu_update_desc]="Check for updates"
+    L[menu_reset]="Reset All"
+    L[menu_reset_desc]="Factory reset"
     L[menu_exit]="Exit"
     L[goodbye]="Goodbye!"
     
@@ -264,6 +269,34 @@ load_lang_en() {
     L[no_logs]="No logs yet"
     L[tip_realtime_log]="Tip: tail -f"
     
+    # Update
+    L[check_update]="Check for Updates"
+    L[checking_update]="Checking for updates..."
+    L[current_version]="Current version"
+    L[latest_version]="Latest version"
+    L[update_available]="Update available!"
+    L[already_latest]="Already up to date"
+    L[confirm_update]="Update now?"
+    L[updating]="Updating..."
+    L[update_success]="Update successful! Please restart the script."
+    L[update_failed]="Update failed"
+    L[backup_old_script]="Old version backed up to"
+    L[download_failed]="Download failed"
+    L[network_error]="Network error, please check your connection"
+    
+    # Reset
+    L[reset_all]="Factory Reset"
+    L[reset_warning]="WARNING: This will delete ALL data!"
+    L[reset_items]="The following will be deleted"
+    L[reset_config]="Configuration file"
+    L[reset_logs]="All log files"
+    L[reset_cron]="Scheduled tasks"
+    L[reset_lang]="Language settings"
+    L[reset_confirm]="Type 'RESET' to confirm"
+    L[reset_success]="Reset complete! vback is now in factory state."
+    L[reset_cancelled]="Reset cancelled"
+    L[reset_type_mismatch]="Input does not match, reset cancelled"
+    
     # Lock/Process errors
     L[err_task_running]="Another backup task is running"
     L[err_lock_pid]="Process ID"
@@ -295,6 +328,8 @@ load_lang_en() {
     L[cli_cmd_cron_install]="Install cron job"
     L[cli_cmd_cron_remove]="Remove cron job"
     L[cli_cmd_config]="Show current config"
+    L[cli_cmd_update]="Update script"
+    L[cli_cmd_reset]="Factory reset"
     L[cli_cmd_help]="Show help"
     L[cli_opt_verbose]="Verbose output"
     L[cli_opt_config]="Config file path"
@@ -442,6 +477,10 @@ load_lang_zh() {
     L[menu_reconfig_desc]="运行配置向导"
     L[menu_lang]="切换语言"
     L[menu_lang_desc]="Change language"
+    L[menu_update]="检查更新"
+    L[menu_update_desc]="更新脚本版本"
+    L[menu_reset]="重置全部"
+    L[menu_reset_desc]="恢复出厂设置"
     L[menu_exit]="退出"
     L[goodbye]="再见！"
     
@@ -507,6 +546,34 @@ load_lang_zh() {
     L[no_logs]="暂无日志"
     L[tip_realtime_log]="提示: 实时查看"
     
+    # Update
+    L[check_update]="检查更新"
+    L[checking_update]="正在检查更新..."
+    L[current_version]="当前版本"
+    L[latest_version]="最新版本"
+    L[update_available]="发现新版本！"
+    L[already_latest]="已是最新版本"
+    L[confirm_update]="是否立即更新？"
+    L[updating]="正在更新..."
+    L[update_success]="更新成功！请重新运行脚本。"
+    L[update_failed]="更新失败"
+    L[backup_old_script]="旧版本已备份到"
+    L[download_failed]="下载失败"
+    L[network_error]="网络错误，请检查网络连接"
+    
+    # Reset
+    L[reset_all]="恢复出厂设置"
+    L[reset_warning]="警告：这将删除所有数据！"
+    L[reset_items]="以下内容将被删除"
+    L[reset_config]="配置文件"
+    L[reset_logs]="所有日志文件"
+    L[reset_cron]="定时任务"
+    L[reset_lang]="语言设置"
+    L[reset_confirm]="输入 'RESET' 确认重置"
+    L[reset_success]="重置完成！vback 已恢复出厂状态。"
+    L[reset_cancelled]="重置已取消"
+    L[reset_type_mismatch]="输入不匹配，重置已取消"
+    
     # Lock/Process errors
     L[err_task_running]="已有备份任务正在运行"
     L[err_lock_pid]="进程 ID"
@@ -538,6 +605,8 @@ load_lang_zh() {
     L[cli_cmd_cron_install]="安装定时任务"
     L[cli_cmd_cron_remove]="移除定时任务"
     L[cli_cmd_config]="显示当前配置"
+    L[cli_cmd_update]="更新脚本"
+    L[cli_cmd_reset]="恢复出厂设置"
     L[cli_cmd_help]="显示帮助"
     L[cli_opt_verbose]="详细输出"
     L[cli_opt_config]="配置文件路径"
@@ -669,6 +738,7 @@ setup_colors() {
             C_BOLD='\033[1m'
             C_DIM='\033[2m'
             C_ITALIC='\033[3m'
+            C_UNDERLINE='\033[4m'
             C_SUCCESS='\033[38;5;35m'
             C_ERROR='\033[1;38;5;196m'
             C_WARNING='\033[38;5;214m'
@@ -684,15 +754,17 @@ setup_colors() {
             C_INPUT='\033[38;5;230m'
             C_ACCENT='\033[38;5;213m'
             C_HINT='\033[38;5;244m'
-            C_LOGO1='\033[38;5;39m'   # 蓝色
-            C_LOGO2='\033[38;5;38m'   # 青蓝
-            C_LOGO3='\033[38;5;44m'   # 青色
-            C_SLOGAN='\033[38;5;249m' # 浅灰
+            C_LOGO1='\033[38;5;39m'
+            C_LOGO2='\033[38;5;38m'
+            C_LOGO3='\033[38;5;44m'
+            C_SLOGAN='\033[38;5;252m'
+            C_LINK='\033[38;5;75m'
         else
             C_RESET='\033[0m'
             C_BOLD='\033[1m'
             C_DIM='\033[2m'
             C_ITALIC='\033[3m'
+            C_UNDERLINE='\033[4m'
             C_SUCCESS='\033[32m'
             C_ERROR='\033[1;31m'
             C_WARNING='\033[33m'
@@ -711,15 +783,16 @@ setup_colors() {
             C_LOGO1='\033[34m'
             C_LOGO2='\033[36m'
             C_LOGO3='\033[36m'
-            C_SLOGAN='\033[37m'
+            C_SLOGAN='\033[97m'
+            C_LINK='\033[96m'
         fi
     else
-        C_RESET='' C_BOLD='' C_DIM='' C_ITALIC=''
+        C_RESET='' C_BOLD='' C_DIM='' C_ITALIC='' C_UNDERLINE=''
         C_SUCCESS='' C_ERROR='' C_WARNING='' C_INFO=''
         C_PRIMARY='' C_MUTED='' C_BORDER=''
         C_MENU_NUM='' C_TITLE='' C_PATH=''
         C_NUMBER='' C_TIMESTAMP='' C_INPUT='' C_ACCENT='' C_HINT=''
-        C_LOGO1='' C_LOGO2='' C_LOGO3='' C_SLOGAN=''
+        C_LOGO1='' C_LOGO2='' C_LOGO3='' C_SLOGAN='' C_LINK=''
     fi
 }
 
@@ -1473,6 +1546,177 @@ remove_cron() {
 }
 
 # ============================================================================
+# 更新功能
+# ============================================================================
+
+get_remote_version() {
+    local remote_script
+    remote_script=$(curl -fsSL --connect-timeout 10 "$RAW_SCRIPT_URL" 2>/dev/null)
+    if [[ $? -ne 0 || -z "$remote_script" ]]; then
+        return 1
+    fi
+    
+    echo "$remote_script" | grep -m1 '^VERSION=' | cut -d'"' -f2
+}
+
+compare_versions() {
+    local v1="$1" v2="$2"
+    
+    if [[ "$v1" == "$v2" ]]; then
+        echo "equal"
+        return
+    fi
+    
+    local IFS='.'
+    local -a ver1=($v1) ver2=($v2)
+    
+    for ((i=0; i<${#ver1[@]} || i<${#ver2[@]}; i++)); do
+        local num1=${ver1[i]:-0}
+        local num2=${ver2[i]:-0}
+        
+        if ((num1 > num2)); then
+            echo "newer"
+            return
+        elif ((num1 < num2)); then
+            echo "older"
+            return
+        fi
+    done
+    
+    echo "equal"
+}
+
+do_update() {
+    info "${L[checking_update]}"
+    echo ""
+    
+    local remote_version
+    remote_version=$(get_remote_version)
+    
+    if [[ -z "$remote_version" ]]; then
+        error "${L[network_error]}"
+        return 1
+    fi
+    
+    show_kv "${L[current_version]}" "$VERSION" "$C_INFO"
+    show_kv "${L[latest_version]}" "$remote_version" "$C_SUCCESS"
+    echo ""
+    
+    local cmp=$(compare_versions "$VERSION" "$remote_version")
+    
+    if [[ "$cmp" == "older" ]]; then
+        success "${L[update_available]}"
+        echo ""
+        
+        if confirm "${L[confirm_update]}" "y"; then
+            echo ""
+            info "${L[updating]}"
+            
+            # 备份旧脚本
+            local backup_file="${SCRIPT_PATH}.backup.$(date +%Y%m%d_%H%M%S)"
+            cp "$SCRIPT_PATH" "$backup_file" 2>/dev/null
+            
+            # 下载新版本
+            local new_script
+            new_script=$(curl -fsSL --connect-timeout 30 "$RAW_SCRIPT_URL" 2>/dev/null)
+            
+            if [[ -z "$new_script" ]]; then
+                error "${L[download_failed]}"
+                return 1
+            fi
+            
+            # 验证下载的脚本
+            if ! echo "$new_script" | grep -q '^#!/bin/bash'; then
+                error "${L[download_failed]}"
+                return 1
+            fi
+            
+            # 写入新脚本
+            echo "$new_script" > "$SCRIPT_PATH"
+            chmod +x "$SCRIPT_PATH"
+            
+            echo ""
+            success "${L[update_success]}"
+            info "${L[backup_old_script]} ${C_PATH}${backup_file}${C_RESET}"
+            
+            log_info "Updated from $VERSION to $remote_version"
+            return 0
+        else
+            info "${L[operation_cancelled]}"
+            return 0
+        fi
+    else
+        success "${L[already_latest]}"
+        return 0
+    fi
+}
+
+# ============================================================================
+# 重置功能
+# ============================================================================
+
+do_reset() {
+    echo ""
+    print_box_top
+    print_box_line ""
+    print_box_line "${C_ERROR}⚠ ${L[reset_all]}${C_RESET}" center
+    print_box_line ""
+    print_box_bottom
+    echo ""
+    
+    echo -e "  ${C_ERROR}${L[reset_warning]}${C_RESET}"
+    echo ""
+    echo -e "  ${C_MUTED}${L[reset_items]}:${C_RESET}"
+    echo -e "    ${C_ERROR}•${C_RESET} ${L[reset_config]}: ${C_PATH}${CONFIG_FILE}${C_RESET}"
+    echo -e "    ${C_ERROR}•${C_RESET} ${L[reset_logs]}: ${C_PATH}${LOG_DIR}/*${C_RESET}"
+    echo -e "    ${C_ERROR}•${C_RESET} ${L[reset_cron]}"
+    echo -e "    ${C_ERROR}•${C_RESET} ${L[reset_lang]}"
+    echo ""
+    
+    echo -ne "  ${C_WARNING}${L[reset_confirm]}${C_RESET}: "
+    read -r confirm_text
+    
+    if [[ "$confirm_text" != "RESET" ]]; then
+        echo ""
+        warn "${L[reset_type_mismatch]}"
+        return 1
+    fi
+    
+    echo ""
+    info "Resetting..."
+    
+    # 1. 移除定时任务
+    if crontab -l 2>/dev/null | grep -qF "$SCRIPT_PATH"; then
+        crontab -l 2>/dev/null | grep -v -F "$SCRIPT_PATH" | crontab - 2>/dev/null
+        info "Removed cron jobs"
+    fi
+    
+    # 2. 删除配置目录
+    if [[ -d "$DATA_DIR" ]]; then
+        rm -rf "$DATA_DIR"
+        info "Removed ${DATA_DIR}"
+    fi
+    
+    # 3. 清理锁文件
+    rm -f "$LOCK_FILE" 2>/dev/null
+    
+    # 4. 重置内存中的变量
+    CLOUD_PROVIDER=""
+    S3_ACCESS_KEY=""
+    S3_SECRET_KEY=""
+    S3_ENDPOINT=""
+    S3_BUCKET=""
+    S3_REGION=""
+    BACKUP_DIRS=()
+    BACKUP_PREFIX=""
+    
+    echo ""
+    success "${L[reset_success]}"
+    
+    return 0
+}
+
+# ============================================================================
 # 配置向导
 # ============================================================================
 
@@ -1665,7 +1909,6 @@ setup_wizard() {
 # ============================================================================
 
 show_logo() {
-    # ASCII Logo
     echo -e "${C_LOGO1}"
     cat << 'EOF'
           _                _    
@@ -1691,8 +1934,8 @@ show_header() {
     # Tagline
     echo -e "    ${C_HINT}${L[tagline]}${C_RESET}"
     
-    # GitHub Link
-    echo -e "    ${C_MUTED}🔗${C_RESET} ${C_INFO}${GITHUB_URL}${C_RESET}"
+    # GitHub Link - 使用更醒目的颜色
+    echo -e "    ${C_LINK}🔗 ${GITHUB_URL}${C_RESET}"
     echo ""
 }
 
@@ -1700,17 +1943,14 @@ show_status_bar() {
     local cron_status=$([[ -n "$(get_cron_status)" ]] && echo "on" || echo "off")
     local provider_name=$(get_provider_name "$CLOUD_PROVIDER")
     
-    # 状态卡片
     print_box_top
     
-    # 云服务商和存储桶
     if [[ -n "$S3_BUCKET" ]]; then
         print_box_line "${C_MUTED}☁${C_RESET}  ${C_INFO}${provider_name:-Cloud}${C_RESET} › ${C_PRIMARY}${S3_BUCKET}${C_RESET}"
     else
         print_box_line "${C_MUTED}☁${C_RESET}  ${C_WARNING}${L[not_set]}${C_RESET}"
     fi
     
-    # 状态指示器
     local status_line=""
     status_line+="$(status_badge $cron_status "${L[scheduled_backup]}")  "
     status_line+="$(status_badge $COMPRESS_BACKUP "${L[compression]}")  "
@@ -1741,10 +1981,12 @@ menu_main() {
         menu_group "${L[menu_exit]}"
         menu_item "r" "${L[menu_reconfig]}" "${L[menu_reconfig_desc]}"
         menu_item "l" "${L[menu_lang]}" "${L[menu_lang_desc]}"
+        menu_item "u" "${L[menu_update]}" "${L[menu_update_desc]}"
+        menu_item "x" "${L[menu_reset]}" "${L[menu_reset_desc]}"
         menu_item "0" "${L[menu_exit]}"
         
         echo ""
-        echo -ne "  ${L[select_option]} ${C_MUTED}[0-6/r/l]${C_RESET}: "
+        echo -ne "  ${L[select_option]} ${C_MUTED}[0-6/r/l/u/x]${C_RESET}: "
         read -r choice
         
         case $choice in
@@ -1756,6 +1998,8 @@ menu_main() {
             6) menu_logs ;;
             r|R) setup_wizard; load_config ;;
             l|L) select_language_dialog; init_providers ;;
+            u|U) menu_update ;;
+            x|X) menu_reset ;;
             0|q|Q) clear; echo -e "\n  ${C_SUCCESS}${L[goodbye]}${C_RESET}\n"; exit 0 ;;
         esac
     done
@@ -2155,6 +2399,38 @@ menu_logs() {
     press_enter
 }
 
+menu_update() {
+    show_header
+    echo -e "  ${C_TITLE}▸ ${L[check_update]}${C_RESET}"
+    echo ""
+    
+    do_update
+    
+    press_enter
+}
+
+menu_reset() {
+    show_header
+    
+    do_reset
+    
+    if [[ $? -eq 0 ]]; then
+        echo ""
+        info "Restarting setup wizard..."
+        sleep 2
+        
+        # 重新选择语言
+        select_language_dialog
+        init_providers
+        
+        # 运行配置向导
+        setup_wizard
+        load_config
+    else
+        press_enter
+    fi
+}
+
 # ============================================================================
 # 命令行接口
 # ============================================================================
@@ -2163,6 +2439,7 @@ usage() {
     echo ""
     show_logo
     echo -e "  ${C_SLOGAN}${L[slogan]}${C_RESET} - ${L[tagline]}"
+    echo -e "  ${C_LINK}${GITHUB_URL}${C_RESET}"
     echo ""
     
     cat << EOF
@@ -2178,6 +2455,8 @@ usage() {
     install-cron    ${L[cli_cmd_cron_install]}
     remove-cron     ${L[cli_cmd_cron_remove]}
     config          ${L[cli_cmd_config]}
+    update          ${L[cli_cmd_update]}
+    reset           ${L[cli_cmd_reset]}
     help            ${L[cli_cmd_help]}
 
   ${C_BOLD}${L[cli_options]}${C_RESET}
@@ -2189,6 +2468,7 @@ usage() {
     $SCRIPT_NAME                    # ${L[cli_cmd_menu]}
     $SCRIPT_NAME backup             # ${L[cli_cmd_backup]}
     $SCRIPT_NAME setup              # ${L[cli_cmd_setup]}
+    $SCRIPT_NAME update             # ${L[cli_cmd_update]}
     $SCRIPT_NAME --lang zh menu     # 中文菜单
 
   ${C_BOLD}${L[cli_config_file]}${C_RESET}
@@ -2317,6 +2597,12 @@ main() {
             ;;
         config)
             show_config_cli
+            ;;
+        update)
+            do_update
+            ;;
+        reset)
+            do_reset
             ;;
         help)
             usage
