@@ -51,11 +51,27 @@
 
 <details>
 <summary>点击展开看截图</summary>
-imgs\ScreenShot_001.png
 
-imgs\ScreenShot_003.png
+<br>
 
-imgs\ScreenShot_004.png
+**主界面**
+
+<img src="imgs/ScreenShot_001.png" width="600" alt="主界面">
+
+<br><br>
+
+**配置向导**
+
+<img src="imgs/ScreenShot_003.png" width="600" alt="配置向导">
+
+<br><br>
+
+**备份过程**
+
+<img src="imgs/ScreenShot_004.png" width="600" alt="备份过程">
+
+</details>
+
 
 **主界面**
 
