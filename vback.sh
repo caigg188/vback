@@ -8,9 +8,11 @@
 # A ready-to-use server backup script
 #
 # 支持: 缤纷云S4 / Cloudflare R2 / AWS S3 / 阿里云OSS / 七牛云 / Google Cloud
-# GitHub: https://github.com/yourname/vback
-# License: MIT
+# 
+# 🔗 GitHub: https://github.com/caigg188/vback
+# 📜 License: MIT
 # ============================================================================
+
 
 VERSION="1.1.0"
 SCRIPT_NAME=$(basename "$0")
@@ -1688,6 +1690,9 @@ show_header() {
     
     # Tagline
     echo -e "    ${C_HINT}${L[tagline]}${C_RESET}"
+    
+    # GitHub Link
+    echo -e "    ${C_MUTED}🔗${C_RESET} ${C_INFO}${GITHUB_URL}${C_RESET}"
     echo ""
 }
 
