@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# vback - 优雅的服务器备份工具 v1.3.0
+# vback - 优雅的服务器备份工具 v1.3.1
 # Elegant Server Backup Tool
 # 
 # 更方便，更省心 | Effortless & Worry-free
@@ -13,7 +13,7 @@
 # 📜 License: MIT
 # ============================================================================
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
 GITHUB_URL="https://github.com/caigg188/vback"
@@ -2633,7 +2633,7 @@ show_status_bar() {
     fi
     
     if [[ -n "$active_task_id" ]] && task_exists "$active_task_id"; then
-        print_box_line "${C_MUTED}◆${C_RESET}  ${L[current_task]} ${C_PRIMARY}${active_task_label}${C_RESET} ${C_MUTED}(${L[prefix]}: $(task_prefix_display "$active_task_id"), ${task_schedule_count "$active_task_id"} ${L[scheduled_backup]})${C_RESET}"
+        print_box_line "${C_MUTED}◆${C_RESET}  ${L[current_task]} ${C_PRIMARY}${active_task_label}${C_RESET} ${C_MUTED}(${L[prefix]}: $(task_prefix_display "$active_task_id"), $(task_schedule_count "$active_task_id") ${L[scheduled_backup]})${C_RESET}"
     else
         print_box_line "${C_MUTED}◆${C_RESET}  ${L[current_task]} ${C_WARNING}${L[not_set]}${C_RESET}"
     fi
