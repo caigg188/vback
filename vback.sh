@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# vback - 优雅的服务器备份工具 v1.2.0
+# vback - 优雅的服务器备份工具 v1.3.0
 # Elegant Server Backup Tool
 # 
 # 更方便，更省心 | Effortless & Worry-free
@@ -13,7 +13,7 @@
 # 📜 License: MIT
 # ============================================================================
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
 GITHUB_URL="https://github.com/caigg188/vback"
@@ -22,9 +22,16 @@ RAW_SCRIPT_URL="https://raw.githubusercontent.com/caigg188/vback/main/vback.sh"
 # ========================= 数据目录 =========================
 DATA_DIR="${VBACK_DATA_DIR:-$HOME/.vback}"
 CONFIG_FILE="${DATA_DIR}/config"
+TASKS_FILE="${DATA_DIR}/tasks"
+SCHEDULES_FILE="${DATA_DIR}/schedules"
 LANG_FILE="${DATA_DIR}/language"
 LOG_DIR="${DATA_DIR}/logs"
 LOG_FILE="${LOG_DIR}/vback.log"
+
+DEFAULT_EXCLUDE_PATTERNS=(
+    "*.log" "*.tmp" "node_modules" ".git"
+    "__pycache__" "*.pyc" ".DS_Store" "Thumbs.db"
+)
 
 # ========================= 默认配置 =========================
 CLOUD_PROVIDER=""
@@ -40,10 +47,21 @@ COMPRESS_BACKUP=true
 COMPRESSION_LEVEL=6
 SQLITE_SAFE_BACKUP=true
 SCHEDULE_CRON="0 3 * * *"
-EXCLUDE_PATTERNS=(
-    "*.log" "*.tmp" "node_modules" ".git"
-    "__pycache__" "*.pyc" ".DS_Store" "Thumbs.db"
-)
+EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
+
+# 备份任务 / 定时任务
+TASK_IDS=()
+SCHEDULE_IDS=()
+ACTIVE_TASK_ID=""
+DEFAULT_TASK_ID=""
+CURRENT_TASK_ID=""
+CLI_TASK_REF=""
+CLI_TASK_ID=""
+CLI_SCHEDULE_ID=""
+CLI_SCHEDULE_NAME=""
+CLI_CRON_EXPR=""
+CLI_SCHEDULED=false
+RUN_CONTEXT="interactive"
 
 # 运行时变量
 LOCK_FILE="/tmp/vback.lock"
@@ -175,6 +193,24 @@ load_lang_en() {
     L[max_backups]="Max backups"
     L[max_backups_desc]="0 = unlimited"
     
+    # Backup tasks
+    L[backup_tasks]="Backup Tasks"
+    L[task_name]="Task Name"
+    L[current_task]="Current Task"
+    L[default_task]="Default Task"
+    L[add_task]="Add Task"
+    L[edit_task]="Edit Task"
+    L[delete_task]="Delete Task"
+    L[set_default_task]="Set as Default"
+    L[task_saved]="Task saved"
+    L[task_deleted]="Task deleted"
+    L[task_set_default]="Default task updated"
+    L[select_backup_task]="Select backup task"
+    L[need_task_first]="Create a backup task first"
+    L[no_tasks]="No backup tasks yet"
+    L[need_keep_one_task]="Keep at least one backup task"
+    L[confirm_delete_task]="Delete backup task?"
+    
     # Exclude patterns
     L[exclude_patterns]="Exclude Patterns"
     L[add_pattern]="Add pattern"
@@ -256,6 +292,16 @@ load_lang_en() {
     L[cron_daily]="Daily at 03:00"
     L[cron_6hours]="Every 6 hours"
     L[cron_weekly]="Weekly on Sunday"
+    L[schedule_task]="Task"
+    L[schedule_name]="Schedule Name"
+    L[add_schedule]="Add Schedule"
+    L[edit_schedule]="Edit Schedule"
+    L[delete_schedule]="Delete Schedule"
+    L[sync_schedules]="Sync to Cron"
+    L[no_schedules]="No schedules yet"
+    L[schedule_saved]="Schedule saved"
+    L[schedule_deleted]="Schedule deleted"
+    L[confirm_delete_schedule]="Delete schedule?"
     
     # Edit config menu
     L[edit_config]="Edit Configuration"
@@ -334,6 +380,12 @@ load_lang_en() {
     L[cli_opt_verbose]="Verbose output"
     L[cli_opt_config]="Config file path"
     L[cli_opt_lang]="Language (en/zh)"
+    L[cli_opt_task]="Task name or ID"
+    L[cli_opt_task_id]="Task ID"
+    L[cli_opt_scheduled]="Scheduled mode (no progress)"
+    L[cli_opt_schedule_id]="Schedule ID"
+    L[cli_opt_cron]="Cron expression"
+    L[cli_opt_schedule_name]="Schedule name"
     L[cli_config_file]="Config file"
     L[cli_log_file]="Log file"
 }
@@ -452,6 +504,24 @@ load_lang_zh() {
     L[max_backups]="保留数量"
     L[max_backups_desc]="0 = 不限制"
     
+    # Backup tasks
+    L[backup_tasks]="备份任务"
+    L[task_name]="任务名称"
+    L[current_task]="当前任务"
+    L[default_task]="默认任务"
+    L[add_task]="新增任务"
+    L[edit_task]="编辑任务"
+    L[delete_task]="删除任务"
+    L[set_default_task]="设为默认任务"
+    L[task_saved]="任务已保存"
+    L[task_deleted]="任务已删除"
+    L[task_set_default]="默认任务已更新"
+    L[select_backup_task]="选择备份任务"
+    L[need_task_first]="请先创建备份任务"
+    L[no_tasks]="暂无备份任务"
+    L[need_keep_one_task]="至少保留一个备份任务"
+    L[confirm_delete_task]="确认删除备份任务？"
+    
     # Exclude patterns
     L[exclude_patterns]="排除规则"
     L[add_pattern]="添加规则"
@@ -533,6 +603,16 @@ load_lang_zh() {
     L[cron_daily]="每天 03:00"
     L[cron_6hours]="每 6 小时"
     L[cron_weekly]="每周日"
+    L[schedule_task]="所属任务"
+    L[schedule_name]="定时任务名称"
+    L[add_schedule]="新增定时任务"
+    L[edit_schedule]="编辑定时任务"
+    L[delete_schedule]="删除定时任务"
+    L[sync_schedules]="同步到 Cron"
+    L[no_schedules]="暂无定时任务"
+    L[schedule_saved]="定时任务已保存"
+    L[schedule_deleted]="定时任务已删除"
+    L[confirm_delete_schedule]="确认删除定时任务？"
     
     # Edit config menu
     L[edit_config]="编辑配置"
@@ -611,6 +691,12 @@ load_lang_zh() {
     L[cli_opt_verbose]="详细输出"
     L[cli_opt_config]="配置文件路径"
     L[cli_opt_lang]="语言 (en/zh)"
+    L[cli_opt_task]="任务名称或 ID"
+    L[cli_opt_task_id]="任务 ID"
+    L[cli_opt_scheduled]="定时运行模式 (关闭进度)"
+    L[cli_opt_schedule_id]="定时任务 ID"
+    L[cli_opt_cron]="Cron 表达式"
+    L[cli_opt_schedule_name]="定时任务名称"
     L[cli_config_file]="配置文件"
     L[cli_log_file]="日志文件"
 }
@@ -805,60 +891,443 @@ init_data_dir() {
     chmod 700 "$DATA_DIR" 2>/dev/null
 }
 
+array_literal() {
+    local item
+    for item in "$@"; do
+        printf '    %q\n' "$item"
+    done
+}
+
+sanitize_identifier() {
+    local raw="$1"
+    raw=$(printf '%s' "${raw,,}" | sed 's/[^a-z0-9_]/_/g; s/__*/_/g; s/^_//; s/_$//')
+    [[ -z "$raw" ]] && raw="item"
+    [[ "$raw" =~ ^[0-9] ]] && raw="id_${raw}"
+    echo "$raw"
+}
+
+array_remove_item() {
+    local value="$1"
+    shift
+    local -a result=()
+    local item
+    for item in "$@"; do
+        [[ "$item" == "$value" ]] || result+=("$item")
+    done
+    printf '%s\n' "${result[@]}"
+}
+
+copy_array_var() {
+    local src="$1" dst="$2"
+    eval "$dst=(\"\${${src}[@]}\")"
+}
+
+set_array_var() {
+    local var_name="$1"
+    shift
+    eval "$var_name=()"
+    local item quoted
+    for item in "$@"; do
+        printf -v quoted '%q' "$item"
+        eval "$var_name+=( $quoted )"
+    done
+}
+
+task_var_name() {
+    echo "TASK_${2}_${1}"
+}
+
+schedule_var_name() {
+    echo "SCHEDULE_${2}_${1}"
+}
+
+task_exists() {
+    local target="$1" id
+    for id in "${TASK_IDS[@]}"; do
+        [[ "$id" == "$target" ]] && return 0
+    done
+    return 1
+}
+
+schedule_exists() {
+    local target="$1" id
+    for id in "${SCHEDULE_IDS[@]}"; do
+        [[ "$id" == "$target" ]] && return 0
+    done
+    return 1
+}
+
+task_get_scalar() {
+    local var_name
+    var_name=$(task_var_name "$1" "$2")
+    printf '%s' "${!var_name}"
+}
+
+task_set_scalar() {
+    local var_name
+    var_name=$(task_var_name "$1" "$2")
+    printf -v "$var_name" '%s' "$3"
+}
+
+task_get_array() {
+    copy_array_var "$(task_var_name "$1" "$2")" "$3"
+}
+
+task_set_array() {
+    local var_name
+    var_name=$(task_var_name "$1" "$2")
+    shift 2
+    set_array_var "$var_name" "$@"
+}
+
+schedule_get_scalar() {
+    local var_name
+    var_name=$(schedule_var_name "$1" "$2")
+    printf '%s' "${!var_name}"
+}
+
+schedule_set_scalar() {
+    local var_name
+    var_name=$(schedule_var_name "$1" "$2")
+    printf -v "$var_name" '%s' "$3"
+}
+
+default_task_name() {
+    [[ "$CURRENT_LANG" == "zh" ]] && echo "默认任务" || echo "Default Task"
+}
+
+default_schedule_name() {
+    local task_name="$1"
+    [[ -n "$task_name" ]] && echo "$task_name" && return
+    [[ "$CURRENT_LANG" == "zh" ]] && echo "默认定时任务" || echo "Default Schedule"
+}
+
+generate_task_id() {
+    local seed base candidate n=1
+    seed="${1:-task}"
+    base="task_$(sanitize_identifier "$seed")"
+    candidate="$base"
+    while task_exists "$candidate"; do
+        candidate="${base}_$n"
+        ((n++))
+    done
+    echo "$candidate"
+}
+
+generate_schedule_id() {
+    local seed base candidate n=1
+    seed="${1:-schedule}"
+    base="schedule_$(sanitize_identifier "$seed")"
+    candidate="$base"
+    while schedule_exists "$candidate"; do
+        candidate="${base}_$n"
+        ((n++))
+    done
+    echo "$candidate"
+}
+
+create_task() {
+    local task_name="${1:-$(default_task_name)}"
+    local task_id="${2:-$(generate_task_id "$task_name")}"
+    
+    TASK_IDS+=("$task_id")
+    task_set_scalar "$task_id" NAME "$task_name"
+    task_set_scalar "$task_id" PREFIX ""
+    task_set_scalar "$task_id" MAX_BACKUPS "7"
+    task_set_scalar "$task_id" COMPRESS "true"
+    task_set_scalar "$task_id" COMPRESSION_LEVEL "6"
+    task_set_scalar "$task_id" SQLITE_SAFE "true"
+    task_set_array "$task_id" DIRS
+    task_set_array "$task_id" EXCLUDES "${DEFAULT_EXCLUDE_PATTERNS[@]}"
+    
+    [[ -z "$DEFAULT_TASK_ID" ]] && DEFAULT_TASK_ID="$task_id"
+    [[ -z "$ACTIVE_TASK_ID" ]] && ACTIVE_TASK_ID="$task_id"
+    echo "$task_id"
+}
+
+create_schedule() {
+    local schedule_name="$1" task_id="$2" cron_expr="$3" schedule_id="$4"
+    [[ -z "$task_id" ]] && return 1
+    
+    schedule_id="${schedule_id:-$(generate_schedule_id "$schedule_name")}"
+    [[ -z "$schedule_name" ]] && schedule_name="$(default_schedule_name "$(task_get_scalar "$task_id" NAME)")"
+    
+    SCHEDULE_IDS+=("$schedule_id")
+    schedule_set_scalar "$schedule_id" NAME "$schedule_name"
+    schedule_set_scalar "$schedule_id" TASK "$task_id"
+    schedule_set_scalar "$schedule_id" CRON "$cron_expr"
+    echo "$schedule_id"
+}
+
+delete_schedule() {
+    local schedule_id="$1"
+    local -a next_ids=()
+    local id
+    for id in "${SCHEDULE_IDS[@]}"; do
+        [[ "$id" == "$schedule_id" ]] || next_ids+=("$id")
+    done
+    SCHEDULE_IDS=("${next_ids[@]}")
+    
+    unset "$(schedule_var_name "$schedule_id" NAME)"
+    unset "$(schedule_var_name "$schedule_id" TASK)"
+    unset "$(schedule_var_name "$schedule_id" CRON)"
+}
+
+delete_task() {
+    local task_id="$1"
+    local schedule_id
+    for schedule_id in "${SCHEDULE_IDS[@]}"; do
+        [[ "$(schedule_get_scalar "$schedule_id" TASK)" == "$task_id" ]] && delete_schedule "$schedule_id"
+    done
+    
+    local -a next_ids=()
+    local id
+    for id in "${TASK_IDS[@]}"; do
+        [[ "$id" == "$task_id" ]] || next_ids+=("$id")
+    done
+    TASK_IDS=("${next_ids[@]}")
+    
+    unset "$(task_var_name "$task_id" NAME)"
+    unset "$(task_var_name "$task_id" PREFIX)"
+    unset "$(task_var_name "$task_id" MAX_BACKUPS)"
+    unset "$(task_var_name "$task_id" COMPRESS)"
+    unset "$(task_var_name "$task_id" COMPRESSION_LEVEL)"
+    unset "$(task_var_name "$task_id" SQLITE_SAFE)"
+    unset "$(task_var_name "$task_id" DIRS)"
+    unset "$(task_var_name "$task_id" EXCLUDES)"
+    
+    [[ "$ACTIVE_TASK_ID" == "$task_id" ]] && ACTIVE_TASK_ID="${TASK_IDS[0]}"
+    [[ "$DEFAULT_TASK_ID" == "$task_id" ]] && DEFAULT_TASK_ID="${TASK_IDS[0]}"
+    [[ "$CURRENT_TASK_ID" == "$task_id" ]] && CURRENT_TASK_ID=""
+}
+
+load_task_context() {
+    local task_id="$1"
+    task_exists "$task_id" || return 1
+    
+    CURRENT_TASK_ID="$task_id"
+    ACTIVE_TASK_ID="$task_id"
+    BACKUP_PREFIX="$(task_get_scalar "$task_id" PREFIX)"
+    MAX_BACKUPS="$(task_get_scalar "$task_id" MAX_BACKUPS)"
+    COMPRESS_BACKUP="$(task_get_scalar "$task_id" COMPRESS)"
+    COMPRESSION_LEVEL="$(task_get_scalar "$task_id" COMPRESSION_LEVEL)"
+    SQLITE_SAFE_BACKUP="$(task_get_scalar "$task_id" SQLITE_SAFE)"
+    
+    [[ -z "$MAX_BACKUPS" ]] && MAX_BACKUPS=7
+    [[ -z "$COMPRESS_BACKUP" ]] && COMPRESS_BACKUP=true
+    [[ -z "$COMPRESSION_LEVEL" ]] && COMPRESSION_LEVEL=6
+    [[ -z "$SQLITE_SAFE_BACKUP" ]] && SQLITE_SAFE_BACKUP=true
+    
+    task_get_array "$task_id" DIRS BACKUP_DIRS
+    task_get_array "$task_id" EXCLUDES EXCLUDE_PATTERNS
+    [[ ${#EXCLUDE_PATTERNS[@]} -eq 0 ]] && EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
+    return 0
+}
+
+save_current_task_context() {
+    local task_id="${1:-$CURRENT_TASK_ID}"
+    [[ -z "$task_id" ]] && return 0
+    
+    task_set_scalar "$task_id" PREFIX "$BACKUP_PREFIX"
+    task_set_scalar "$task_id" MAX_BACKUPS "$MAX_BACKUPS"
+    task_set_scalar "$task_id" COMPRESS "$COMPRESS_BACKUP"
+    task_set_scalar "$task_id" COMPRESSION_LEVEL "$COMPRESSION_LEVEL"
+    task_set_scalar "$task_id" SQLITE_SAFE "$SQLITE_SAFE_BACKUP"
+    task_set_array "$task_id" DIRS "${BACKUP_DIRS[@]}"
+    task_set_array "$task_id" EXCLUDES "${EXCLUDE_PATTERNS[@]}"
+}
+
+load_tasks_store() {
+    [[ -f "$TASKS_FILE" ]] && source "$TASKS_FILE"
+}
+
+load_schedules_store() {
+    [[ -f "$SCHEDULES_FILE" ]] && source "$SCHEDULES_FILE"
+}
+
+save_tasks_store() {
+    init_data_dir
+    
+    {
+        echo "# vback tasks file"
+        echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo ""
+        echo "TASK_IDS=("
+        array_literal "${TASK_IDS[@]}"
+        echo ")"
+        printf 'ACTIVE_TASK_ID=%q\n' "$ACTIVE_TASK_ID"
+        printf 'DEFAULT_TASK_ID=%q\n' "$DEFAULT_TASK_ID"
+        echo ""
+        
+        local task_id
+        for task_id in "${TASK_IDS[@]}"; do
+            local -a task_dirs=() task_excludes=()
+            task_get_array "$task_id" DIRS task_dirs
+            task_get_array "$task_id" EXCLUDES task_excludes
+            
+            printf 'TASK_NAME_%s=%q\n' "$task_id" "$(task_get_scalar "$task_id" NAME)"
+            printf 'TASK_PREFIX_%s=%q\n' "$task_id" "$(task_get_scalar "$task_id" PREFIX)"
+            printf 'TASK_MAX_BACKUPS_%s=%q\n' "$task_id" "$(task_get_scalar "$task_id" MAX_BACKUPS)"
+            printf 'TASK_COMPRESS_%s=%q\n' "$task_id" "$(task_get_scalar "$task_id" COMPRESS)"
+            printf 'TASK_COMPRESSION_LEVEL_%s=%q\n' "$task_id" "$(task_get_scalar "$task_id" COMPRESSION_LEVEL)"
+            printf 'TASK_SQLITE_SAFE_%s=%q\n' "$task_id" "$(task_get_scalar "$task_id" SQLITE_SAFE)"
+            echo "TASK_DIRS_${task_id}=("
+            array_literal "${task_dirs[@]}"
+            echo ")"
+            echo "TASK_EXCLUDES_${task_id}=("
+            array_literal "${task_excludes[@]}"
+            echo ")"
+            echo ""
+        done
+    } > "$TASKS_FILE"
+    
+    chmod 600 "$TASKS_FILE"
+}
+
+save_schedules_store() {
+    init_data_dir
+    
+    {
+        echo "# vback schedules file"
+        echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo ""
+        echo "SCHEDULE_IDS=("
+        array_literal "${SCHEDULE_IDS[@]}"
+        echo ")"
+        echo ""
+        
+        local schedule_id
+        for schedule_id in "${SCHEDULE_IDS[@]}"; do
+            printf 'SCHEDULE_NAME_%s=%q\n' "$schedule_id" "$(schedule_get_scalar "$schedule_id" NAME)"
+            printf 'SCHEDULE_TASK_%s=%q\n' "$schedule_id" "$(schedule_get_scalar "$schedule_id" TASK)"
+            printf 'SCHEDULE_CRON_%s=%q\n' "$schedule_id" "$(schedule_get_scalar "$schedule_id" CRON)"
+            echo ""
+        done
+    } > "$SCHEDULES_FILE"
+    
+    chmod 600 "$SCHEDULES_FILE"
+}
+
+migrate_legacy_config() {
+    if [[ ${#TASK_IDS[@]} -eq 0 && -f "$CONFIG_FILE" && ${#BACKUP_DIRS[@]} -gt 0 ]]; then
+        local legacy_task_id="task_default"
+        local -a legacy_excludes=("${EXCLUDE_PATTERNS[@]}")
+        [[ ${#legacy_excludes[@]} -eq 0 ]] && legacy_excludes=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
+        
+        TASK_IDS=("$legacy_task_id")
+        DEFAULT_TASK_ID="$legacy_task_id"
+        ACTIVE_TASK_ID="$legacy_task_id"
+        
+        task_set_scalar "$legacy_task_id" NAME "$(default_task_name)"
+        task_set_scalar "$legacy_task_id" PREFIX "$BACKUP_PREFIX"
+        task_set_scalar "$legacy_task_id" MAX_BACKUPS "$MAX_BACKUPS"
+        task_set_scalar "$legacy_task_id" COMPRESS "$COMPRESS_BACKUP"
+        task_set_scalar "$legacy_task_id" COMPRESSION_LEVEL "$COMPRESSION_LEVEL"
+        task_set_scalar "$legacy_task_id" SQLITE_SAFE "$SQLITE_SAFE_BACKUP"
+        task_set_array "$legacy_task_id" DIRS "${BACKUP_DIRS[@]}"
+        task_set_array "$legacy_task_id" EXCLUDES "${legacy_excludes[@]}"
+    fi
+    
+    if [[ ${#SCHEDULE_IDS[@]} -eq 0 && -f "$CONFIG_FILE" && -n "$SCHEDULE_CRON" && ${#TASK_IDS[@]} -gt 0 ]]; then
+        local default_task="${DEFAULT_TASK_ID:-${TASK_IDS[0]}}"
+        create_schedule "$(default_schedule_name "$(task_get_scalar "$default_task" NAME)")" "$default_task" "$SCHEDULE_CRON" "schedule_default" >/dev/null
+    fi
+}
+
+ensure_task_store() {
+    if [[ ${#TASK_IDS[@]} -eq 0 && ! -f "$CONFIG_FILE" ]]; then
+        CURRENT_TASK_ID=""
+        return 0
+    fi
+    
+    if [[ -z "$DEFAULT_TASK_ID" ]] || ! task_exists "$DEFAULT_TASK_ID"; then
+        DEFAULT_TASK_ID="${TASK_IDS[0]}"
+    fi
+    
+    if [[ -z "$ACTIVE_TASK_ID" ]] || ! task_exists "$ACTIVE_TASK_ID"; then
+        ACTIVE_TASK_ID="${DEFAULT_TASK_ID:-${TASK_IDS[0]}}"
+    fi
+    
+    if [[ -n "$ACTIVE_TASK_ID" ]]; then
+        load_task_context "$ACTIVE_TASK_ID"
+    fi
+}
+
 load_config() {
     [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+    load_tasks_store
+    load_schedules_store
+    migrate_legacy_config
+    ensure_task_store
 }
 
 save_config() {
     init_data_dir
+    save_current_task_context
+    save_tasks_store
+    save_schedules_store
     
-    local backup_dirs_str=""
-    for d in "${BACKUP_DIRS[@]}"; do
-        backup_dirs_str+="    \"$d\"\n"
-    done
+    local mirror_task_id="${DEFAULT_TASK_ID:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}"
+    local mirror_prefix="" mirror_max_backups=7 mirror_compress=true mirror_compression_level=6 mirror_sqlite_safe=true
+    local -a mirror_dirs=() mirror_excludes=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
     
-    local exclude_str=""
-    for p in "${EXCLUDE_PATTERNS[@]}"; do
-        exclude_str+="    \"$p\"\n"
-    done
+    if [[ -n "$mirror_task_id" ]] && task_exists "$mirror_task_id"; then
+        mirror_prefix="$(task_get_scalar "$mirror_task_id" PREFIX)"
+        mirror_max_backups="$(task_get_scalar "$mirror_task_id" MAX_BACKUPS)"
+        mirror_compress="$(task_get_scalar "$mirror_task_id" COMPRESS)"
+        mirror_compression_level="$(task_get_scalar "$mirror_task_id" COMPRESSION_LEVEL)"
+        mirror_sqlite_safe="$(task_get_scalar "$mirror_task_id" SQLITE_SAFE)"
+        task_get_array "$mirror_task_id" DIRS mirror_dirs
+        task_get_array "$mirror_task_id" EXCLUDES mirror_excludes
+    fi
+    
+    local mirror_schedule_cron="${SCHEDULE_CRON:-0 3 * * *}"
+    if [[ ${#SCHEDULE_IDS[@]} -gt 0 ]]; then
+        mirror_schedule_cron="$(schedule_get_scalar "${SCHEDULE_IDS[0]}" CRON)"
+    fi
     
     cat > "$CONFIG_FILE" << EOF
 # vback configuration file
 # Generated: $(date '+%Y-%m-%d %H:%M:%S')
 
 # Cloud Provider
-CLOUD_PROVIDER="$CLOUD_PROVIDER"
+CLOUD_PROVIDER=$(printf '%q' "$CLOUD_PROVIDER")
 
 # S3 Connection
-S3_ACCESS_KEY="$S3_ACCESS_KEY"
-S3_SECRET_KEY="$S3_SECRET_KEY"
-S3_ENDPOINT="$S3_ENDPOINT"
-S3_BUCKET="$S3_BUCKET"
-S3_REGION="$S3_REGION"
+S3_ACCESS_KEY=$(printf '%q' "$S3_ACCESS_KEY")
+S3_SECRET_KEY=$(printf '%q' "$S3_SECRET_KEY")
+S3_ENDPOINT=$(printf '%q' "$S3_ENDPOINT")
+S3_BUCKET=$(printf '%q' "$S3_BUCKET")
+S3_REGION=$(printf '%q' "$S3_REGION")
 
-# Backup Directories
+# Legacy mirror (compatible with v1.2.x data layout)
 BACKUP_DIRS=(
-$(echo -e "$backup_dirs_str"))
-
-# Backup Options
-BACKUP_PREFIX="$BACKUP_PREFIX"
-MAX_BACKUPS=$MAX_BACKUPS
-COMPRESS_BACKUP=$COMPRESS_BACKUP
-COMPRESSION_LEVEL=$COMPRESSION_LEVEL
-SQLITE_SAFE_BACKUP=$SQLITE_SAFE_BACKUP
-
-# Schedule
-SCHEDULE_CRON="$SCHEDULE_CRON"
-
-# Exclude Patterns
+$(array_literal "${mirror_dirs[@]}")
+)
+BACKUP_PREFIX=$(printf '%q' "$mirror_prefix")
+MAX_BACKUPS=$mirror_max_backups
+COMPRESS_BACKUP=$mirror_compress
+COMPRESSION_LEVEL=$mirror_compression_level
+SQLITE_SAFE_BACKUP=$mirror_sqlite_safe
+SCHEDULE_CRON=$(printf '%q' "$mirror_schedule_cron")
 EXCLUDE_PATTERNS=(
-$(echo -e "$exclude_str"))
+$(array_literal "${mirror_excludes[@]}")
+)
+
+# Current defaults
+ACTIVE_TASK_ID=$(printf '%q' "$ACTIVE_TASK_ID")
+DEFAULT_TASK_ID=$(printf '%q' "$DEFAULT_TASK_ID")
 EOF
     chmod 600 "$CONFIG_FILE"
 }
 
 needs_setup() {
-    [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" || -z "$S3_BUCKET" || ${#BACKUP_DIRS[@]} -eq 0 ]]
+    local check_task_id="${DEFAULT_TASK_ID:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}"
+    local -a check_dirs=()
+    
+    [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" || -z "$S3_BUCKET" || -z "$check_task_id" ]] && return 0
+    task_get_array "$check_task_id" DIRS check_dirs
+    [[ ${#check_dirs[@]} -eq 0 ]]
 }
 
 # ============================================================================
@@ -1081,6 +1550,102 @@ show_kv() {
     fi
 }
 
+task_display_name() {
+    local task_id="$1"
+    local task_name
+    task_name="$(task_get_scalar "$task_id" NAME)"
+    printf '%s' "${task_name:-$task_id}"
+}
+
+task_dir_count() {
+    local -a task_dirs=()
+    task_get_array "$1" DIRS task_dirs
+    echo "${#task_dirs[@]}"
+}
+
+task_prefix_display() {
+    local prefix
+    prefix="$(task_get_scalar "$1" PREFIX)"
+    [[ -n "$prefix" ]] && printf '%s' "$prefix" || printf '%s' "${L[root_directory]}"
+}
+
+task_schedule_count() {
+    local task_id="$1" count=0 schedule_id
+    for schedule_id in "${SCHEDULE_IDS[@]}"; do
+        [[ "$(schedule_get_scalar "$schedule_id" TASK)" == "$task_id" ]] && ((count++))
+    done
+    echo "$count"
+}
+
+resolve_task_ref() {
+    local ref="$1" task_id
+    [[ -z "$ref" ]] && return 1
+    
+    if task_exists "$ref"; then
+        echo "$ref"
+        return 0
+    fi
+    
+    for task_id in "${TASK_IDS[@]}"; do
+        [[ "$(task_display_name "$task_id")" == "$ref" ]] && {
+            echo "$task_id"
+            return 0
+        }
+    done
+    
+    return 1
+}
+
+schedule_display_name() {
+    local schedule_id="$1"
+    local schedule_name
+    schedule_name="$(schedule_get_scalar "$schedule_id" NAME)"
+    printf '%s' "${schedule_name:-$schedule_id}"
+}
+
+schedule_installed() {
+    get_cron_status | grep -F -- "--schedule-id $1" >/dev/null 2>&1
+}
+
+prompt_task_selection() {
+    local title="${1:-${L[select_option]}}" default_task="${2:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}"
+    
+    if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
+        echo -e "  ${C_ERROR}✗${C_RESET} ${L[need_task_first]}" >&2
+        log_error "${L[need_task_first]}"
+        return 1
+    fi
+    
+    if [[ ${#TASK_IDS[@]} -eq 1 ]]; then
+        echo "${TASK_IDS[0]}"
+        return 0
+    fi
+    
+    echo -e "  ${C_BOLD}${title}${C_RESET}" >&2
+    local i=1 task_id
+    for task_id in "${TASK_IDS[@]}"; do
+        local marker=" "
+        [[ "$task_id" == "$default_task" ]] && marker="*"
+        printf "    ${C_MENU_NUM}%d${C_RESET}) [%s] %s ${C_MUTED}(%s, %s %s)${C_RESET}\n" \
+            "$i" "$marker" "$(task_display_name "$task_id")" "$(task_prefix_display "$task_id")" "$(task_dir_count "$task_id")" "${L[backup_directories]}" >&2
+        ((i++))
+    done
+    
+    echo "" >&2
+    echo -ne "  ${L[select_option]} ${C_MUTED}[1-${#TASK_IDS[@]}/0]${C_RESET}: " >&2
+    local choice
+    read -r choice
+    
+    [[ "$choice" == "0" || -z "$choice" ]] && return 1
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#TASK_IDS[@]} ]]; then
+        echo "${TASK_IDS[$((choice-1))]}"
+        return 0
+    fi
+    
+    warn "${L[invalid_option]}"
+    return 1
+}
+
 # ============================================================================
 # S3 工具
 # ============================================================================
@@ -1158,12 +1723,26 @@ build_s3_path() {
     [[ -n "$BACKUP_PREFIX" ]] && echo "${BACKUP_PREFIX}/${path}" || echo "$path"
 }
 
+should_show_upload_progress() {
+    [[ "$RUN_CONTEXT" != "scheduled" && -t 1 && -t 2 ]]
+}
+
 s3_put() {
-    local src="$1" dst=$(build_s3_path "$2")
+    local src="$1" dst=$(build_s3_path "$2") show_progress="${3:-auto}"
+    [[ "$show_progress" == "auto" ]] && { should_show_upload_progress && show_progress=true || show_progress=false; }
+    
     if [[ "$S3_TOOL" == "s3cmd" ]]; then
-        s3cmd -c "$S3CMD_CFG" put "$src" "s3://${S3_BUCKET}/${dst}" 2>&1
+        if [[ "$show_progress" == "true" ]]; then
+            s3cmd -c "$S3CMD_CFG" put --progress "$src" "s3://${S3_BUCKET}/${dst}"
+        else
+            s3cmd -c "$S3CMD_CFG" put "$src" "s3://${S3_BUCKET}/${dst}" 2>&1
+        fi
     else
-        aws s3 cp "$src" "s3://${S3_BUCKET}/${dst}" $AWS_ENDPOINT 2>&1
+        if [[ "$show_progress" == "true" ]]; then
+            aws s3 cp "$src" "s3://${S3_BUCKET}/${dst}" $AWS_ENDPOINT
+        else
+            aws s3 cp "$src" "s3://${S3_BUCKET}/${dst}" $AWS_ENDPOINT --no-progress 2>&1
+        fi
     fi
 }
 
@@ -1216,6 +1795,9 @@ s3_test() {
 # ============================================================================
 
 validate_config() {
+    local task_id="${1:-${CURRENT_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}}"
+    [[ -n "$task_id" && "$CURRENT_TASK_ID" != "$task_id" ]] && load_task_context "$task_id"
+    
     local errors=()
     [[ -z "$S3_ACCESS_KEY" ]] && errors+=("${L[access_key]} ${L[not_set]}")
     [[ -z "$S3_SECRET_KEY" ]] && errors+=("${L[secret_key]} ${L[not_set]}")
@@ -1422,14 +2004,25 @@ backup_dir() {
     
     info "${L[uploading]}..."
     local upload_start=$(date +%s)
-    local result=$(s3_put "$archive_file" "$s3_key")
-    local rc=$?
+    local result="" rc=0
+    if should_show_upload_progress; then
+        echo ""
+        s3_put "$archive_file" "$s3_key" true
+        rc=$?
+        echo ""
+    else
+        result=$(s3_put "$archive_file" "$s3_key" false)
+        rc=$?
+    fi
     local upload_duration=$(($(date +%s) - upload_start))
     
     rm -f "$archive_file"
     local total_duration=$(($(date +%s) - start))
     
-    if [[ $rc -eq 0 ]] && ! echo "$result" | grep -qi "error\|fail"; then
+    local output_has_error=false
+    [[ -n "$result" ]] && echo "$result" | grep -qi "error\|fail" && output_has_error=true
+    
+    if [[ $rc -eq 0 && "$output_has_error" != "true" ]]; then
         local speed=$(fmt_speed $archive_size $upload_duration)
         success "${L[upload_complete]}: ${C_PATH}${s3_key}${C_RESET}"
         info "${L[transfer]}: ${C_NUMBER}$(fmt_size $archive_size)${C_RESET} @ ${C_NUMBER}${speed}/s${C_RESET}"
@@ -1438,7 +2031,7 @@ backup_dir() {
         return 0
     else
         error "${L[upload_failed]}"
-        echo "$result" | head -3 | sed 's/^/    /'
+        [[ -n "$result" ]] && echo "$result" | head -3 | sed 's/^/    /'
         log_error "Backup failed: $name"
         return 1
     fi
@@ -1493,7 +2086,8 @@ do_backup() {
         ((current++))
         echo ""
         print_line '─'
-        echo -e "  ${C_BOLD}[$current/$total]${C_RESET} $(basename "$d")"
+        local progress_pct=$((current * 100 / total))
+        echo -e "  ${C_BOLD}[$current/$total | ${progress_pct}%]${C_RESET} $(basename "$d")"
         
         if backup_dir "$d" "$ts"; then
             ((ok++))
@@ -1532,15 +2126,67 @@ get_cron_status() {
     crontab -l 2>/dev/null | grep -F "$SCRIPT_PATH" | grep -v "^#"
 }
 
+remove_all_cron_jobs() {
+    local current_crontab
+    current_crontab="$(crontab -l 2>/dev/null || true)"
+    printf '%s\n' "$current_crontab" | grep -v -F "$SCRIPT_PATH" | crontab - 2>/dev/null
+}
+
+build_cron_command() {
+    local task_id="$1" schedule_id="$2"
+    local script_q task_q schedule_q log_q
+    printf -v script_q '%q' "$SCRIPT_PATH"
+    printf -v task_q '%q' "$task_id"
+    printf -v schedule_q '%q' "$schedule_id"
+    printf -v log_q '%q' "$LOG_FILE"
+    printf '%s backup --task-id %s --scheduled --schedule-id %s >> %s 2>&1' "$script_q" "$task_q" "$schedule_q" "$log_q"
+}
+
+sync_cron_jobs() {
+    local current_crontab filtered_crontab
+    current_crontab="$(crontab -l 2>/dev/null || true)"
+    filtered_crontab="$(printf '%s\n' "$current_crontab" | grep -v -F "$SCRIPT_PATH")"
+    
+    {
+        [[ -n "$filtered_crontab" ]] && printf '%s\n' "$filtered_crontab"
+        local schedule_id cron_expr task_id
+        for schedule_id in "${SCHEDULE_IDS[@]}"; do
+            cron_expr="$(schedule_get_scalar "$schedule_id" CRON)"
+            task_id="$(schedule_get_scalar "$schedule_id" TASK)"
+            [[ -n "$cron_expr" && -n "$task_id" ]] || continue
+            printf '%s %s\n' "$cron_expr" "$(build_cron_command "$task_id" "$schedule_id")"
+        done
+    } | crontab -
+}
+
 install_cron() {
-    crontab -l 2>/dev/null | grep -v -F "$SCRIPT_PATH" | crontab - 2>/dev/null
-    (crontab -l 2>/dev/null; echo "${SCHEDULE_CRON} ${SCRIPT_PATH} backup >> ${LOG_FILE} 2>&1") | crontab -
-    success "${L[cron_installed]}: ${C_INFO}${SCHEDULE_CRON}${C_RESET}"
-    log_info "Cron installed: $SCHEDULE_CRON"
+    local task_id="${1:-}" cron_expr="${2:-}" schedule_name="${3:-}" schedule_id="${4:-}"
+    
+    if [[ -n "$task_id" || -n "$cron_expr" || ${#SCHEDULE_IDS[@]} -eq 0 ]]; then
+        task_id="${task_id:-${DEFAULT_TASK_ID:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}}"
+        cron_expr="${cron_expr:-${SCHEDULE_CRON:-0 3 * * *}}"
+        schedule_name="${schedule_name:-$(default_schedule_name "$(task_get_scalar "$task_id" NAME)")}"
+        schedule_id="${schedule_id:-}"
+        
+        if [[ -n "$schedule_id" ]] && schedule_exists "$schedule_id"; then
+            schedule_set_scalar "$schedule_id" NAME "$schedule_name"
+            schedule_set_scalar "$schedule_id" TASK "$task_id"
+            schedule_set_scalar "$schedule_id" CRON "$cron_expr"
+        elif [[ -n "$schedule_id" ]]; then
+            create_schedule "$schedule_name" "$task_id" "$cron_expr" "$schedule_id" >/dev/null
+        else
+            create_schedule "$schedule_name" "$task_id" "$cron_expr" >/dev/null
+        fi
+    fi
+    
+    sync_cron_jobs
+    save_config
+    success "${L[cron_installed]}"
+    log_info "Cron synced schedules=${#SCHEDULE_IDS[@]}"
 }
 
 remove_cron() {
-    crontab -l 2>/dev/null | grep -v -F "$SCRIPT_PATH" | crontab - 2>/dev/null
+    remove_all_cron_jobs
     success "${L[cron_removed]}"
     log_info "Cron removed"
 }
@@ -1687,7 +2333,7 @@ do_reset() {
     
     # 1. 移除定时任务
     if crontab -l 2>/dev/null | grep -qF "$SCRIPT_PATH"; then
-        crontab -l 2>/dev/null | grep -v -F "$SCRIPT_PATH" | crontab - 2>/dev/null
+        remove_all_cron_jobs
         info "Removed cron jobs"
     fi
     
@@ -1709,6 +2355,16 @@ do_reset() {
     S3_REGION=""
     BACKUP_DIRS=()
     BACKUP_PREFIX=""
+    MAX_BACKUPS=7
+    COMPRESS_BACKUP=true
+    COMPRESSION_LEVEL=6
+    SQLITE_SAFE_BACKUP=true
+    EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
+    TASK_IDS=()
+    SCHEDULE_IDS=()
+    ACTIVE_TASK_ID=""
+    DEFAULT_TASK_ID=""
+    CURRENT_TASK_ID=""
     
     echo ""
     success "${L[reset_success]}"
@@ -1763,6 +2419,18 @@ select_provider() {
 }
 
 setup_wizard() {
+    local setup_task_id="${DEFAULT_TASK_ID}"
+    local setup_task_name=""
+    
+    if [[ -z "$setup_task_id" ]]; then
+        setup_task_id="$(create_task "$(default_task_name)")"
+    elif ! task_exists "$setup_task_id"; then
+        setup_task_id="$(create_task "$(default_task_name)")"
+    fi
+    
+    load_task_context "$setup_task_id"
+    setup_task_name="$(task_display_name "$setup_task_id")"
+    
     clear
     echo ""
     print_box_top
@@ -1803,7 +2471,12 @@ setup_wizard() {
     fi
     
     input_field "${L[region]}" "$S3_REGION" S3_REGION false "region_hint"
-    input_field "${L[prefix]}" "" BACKUP_PREFIX false "prefix_hint"
+    
+    echo ""
+    input_field "${L[task_name]}" "$setup_task_name" setup_task_name false
+    task_set_scalar "$setup_task_id" NAME "$setup_task_name"
+    ACTIVE_TASK_ID="$setup_task_id"
+    DEFAULT_TASK_ID="${DEFAULT_TASK_ID:-$setup_task_id}"
     
     clear
     echo ""
@@ -1849,6 +2522,8 @@ setup_wizard() {
     print_box_bottom
     echo ""
     
+    input_field "${L[prefix]}" "$BACKUP_PREFIX" BACKUP_PREFIX false "prefix_hint"
+    
     if confirm "${L[enable_compression]}" "y"; then
         COMPRESS_BACKUP=true
         input_field "${L[compression_level]} (1-9)" "6" COMPRESSION_LEVEL
@@ -1876,12 +2551,15 @@ setup_wizard() {
     show_kv "${L[cloud_provider]}" "$(get_provider_name "$CLOUD_PROVIDER")" "$C_INFO"
     show_kv "${L[bucket]}" "$S3_BUCKET" "$C_INFO"
     show_kv "${L[endpoint]}" "$S3_ENDPOINT"
+    show_kv "${L[task_name]}" "$setup_task_name" "$C_INFO"
     show_kv "${L[backup_directories]}" "${#BACKUP_DIRS[@]}"
+    show_kv "${L[prefix]}" "${BACKUP_PREFIX:-${L[root_directory]}}"
     show_kv "${L[compression]}" "$COMPRESS_BACKUP"
     show_kv "${L[sqlite_safe]}" "$SQLITE_SAFE_BACKUP"
     echo ""
     
     if confirm "${L[save_config_confirm]}" "y"; then
+        save_current_task_context "$setup_task_id"
         save_config
         success "${L[config_saved]} ${C_PATH}${CONFIG_FILE}${C_RESET}"
         echo ""
@@ -1940,8 +2618,11 @@ show_header() {
 }
 
 show_status_bar() {
-    local cron_status=$([[ -n "$(get_cron_status)" ]] && echo "on" || echo "off")
+    local cron_status=$([[ ${#SCHEDULE_IDS[@]} -gt 0 && -n "$(get_cron_status)" ]] && echo "on" || echo "off")
     local provider_name=$(get_provider_name "$CLOUD_PROVIDER")
+    local active_task_id="${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}"
+    local active_task_label="${L[not_set]}"
+    [[ -n "$active_task_id" ]] && task_exists "$active_task_id" && active_task_label="$(task_display_name "$active_task_id")"
     
     print_box_top
     
@@ -1951,8 +2632,14 @@ show_status_bar() {
         print_box_line "${C_MUTED}☁${C_RESET}  ${C_WARNING}${L[not_set]}${C_RESET}"
     fi
     
+    if [[ -n "$active_task_id" ]] && task_exists "$active_task_id"; then
+        print_box_line "${C_MUTED}◆${C_RESET}  ${L[current_task]} ${C_PRIMARY}${active_task_label}${C_RESET} ${C_MUTED}(${L[prefix]}: $(task_prefix_display "$active_task_id"), ${task_schedule_count "$active_task_id"} ${L[scheduled_backup]})${C_RESET}"
+    else
+        print_box_line "${C_MUTED}◆${C_RESET}  ${L[current_task]} ${C_WARNING}${L[not_set]}${C_RESET}"
+    fi
+    
     local status_line=""
-    status_line+="$(status_badge $cron_status "${L[scheduled_backup]}")  "
+    status_line+="$(status_badge $cron_status "${L[scheduled_backup]} ${#SCHEDULE_IDS[@]}")  "
     status_line+="$(status_badge $COMPRESS_BACKUP "${L[compression]}")  "
     status_line+="$(status_badge $SQLITE_SAFE_BACKUP "SQLite")"
     print_box_line "$status_line"
@@ -2010,10 +2697,18 @@ menu_backup() {
     echo -e "  ${C_TITLE}▸ ${L[menu_backup]}${C_RESET}"
     echo ""
     
-    if ! validate_config; then
+    local selected_task=""
+    selected_task=$(prompt_task_selection "${L[select_backup_task]}" "${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}") || { press_enter; return; }
+    load_task_context "$selected_task"
+    
+    if ! validate_config "$selected_task"; then
         press_enter
         return
     fi
+    
+    show_kv "${L[task_name]}" "$(task_display_name "$selected_task")" "$C_INFO"
+    show_kv "${L[prefix]}" "${BACKUP_PREFIX:-${L[root_directory]}}"
+    echo ""
     
     echo -e "  ${L[will_backup_dirs]} ${C_NUMBER}${#BACKUP_DIRS[@]}${C_RESET}:"
     echo ""
@@ -2034,6 +2729,7 @@ menu_backup() {
     echo ""
     
     if confirm "${L[confirm_backup]}"; then
+        save_config
         do_backup
     else
         info "${L[operation_cancelled]}"
@@ -2047,13 +2743,20 @@ menu_list_backups() {
     echo -e "  ${C_TITLE}▸ ${L[remote_backups]}${C_RESET}"
     echo ""
     
-    if ! validate_config; then
+    local selected_task=""
+    selected_task=$(prompt_task_selection "${L[select_backup_task]}" "${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}") || { press_enter; return; }
+    load_task_context "$selected_task"
+    
+    if ! validate_config "$selected_task"; then
         press_enter
         return
     fi
     
     check_s3_tool || { error "${L[err_no_s3_tool]}"; press_enter; return; }
     [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws
+    
+    echo -e "  ${C_BOLD}$(task_display_name "$selected_task")${C_RESET} ${C_MUTED}(${BACKUP_PREFIX:-${L[root_directory]}})${C_RESET}"
+    echo ""
     
     for d in "${BACKUP_DIRS[@]}"; do
         local name=$(basename "$d")
@@ -2110,42 +2813,275 @@ menu_test() {
     press_enter
 }
 
+edit_task_menu() {
+    local task_id="$1"
+    
+    while true; do
+        load_task_context "$task_id"
+        show_header
+        echo -e "  ${C_TITLE}▸ ${L[backup_tasks]}${C_RESET}"
+        echo ""
+        
+        show_kv "${L[task_name]}" "$(task_display_name "$task_id")" "$C_INFO"
+        show_kv "${L[prefix]}" "${BACKUP_PREFIX:-${L[root_directory]}}"
+        show_kv "${L[backup_directories]}" "${#BACKUP_DIRS[@]}"
+        show_kv "${L[scheduled_backup]}" "$(task_schedule_count "$task_id")"
+        show_kv "${L[compression]}" "$COMPRESS_BACKUP (${L[compression_level]} $COMPRESSION_LEVEL)"
+        show_kv "${L[sqlite_safe]}" "$SQLITE_SAFE_BACKUP"
+        show_kv "${L[max_backups]}" "$MAX_BACKUPS"
+        show_kv "${L[default_task]}" "$([[ "$DEFAULT_TASK_ID" == "$task_id" ]] && echo "${L[yes]}" || echo "${L[no]}")"
+        
+        echo ""
+        print_line '─'
+        menu_item "1" "${L[task_name]}"
+        menu_item "2" "${L[backup_directories]}"
+        menu_item "3" "${L[backup_settings]}"
+        menu_item "4" "${L[exclude_patterns]}"
+        menu_item "5" "${L[set_default_task]}"
+        menu_item "s" "${L[save]}"
+        menu_item "0" "${L[back]}"
+        
+        echo ""
+        echo -ne "  ${L[select_option]} ${C_MUTED}[0-5/s]${C_RESET}: "
+        local choice new_task_name
+        read -r choice
+        
+        case $choice in
+            1)
+                new_task_name="$(task_display_name "$task_id")"
+                input_field "${L[task_name]}" "$new_task_name" new_task_name false
+                task_set_scalar "$task_id" NAME "$new_task_name"
+                ;;
+            2) edit_backup_dirs ;;
+            3) edit_backup_options ;;
+            4) edit_exclude_patterns ;;
+            5)
+                DEFAULT_TASK_ID="$task_id"
+                ACTIVE_TASK_ID="$task_id"
+                save_current_task_context "$task_id"
+                save_config
+                success "${L[task_set_default]}"
+                press_enter
+                ;;
+            s|S)
+                ACTIVE_TASK_ID="$task_id"
+                save_current_task_context "$task_id"
+                save_config
+                success "${L[task_saved]}"
+                press_enter
+                ;;
+            0|"")
+                save_current_task_context "$task_id"
+                ACTIVE_TASK_ID="$task_id"
+                return
+                ;;
+        esac
+    done
+}
+
+menu_tasks() {
+    while true; do
+        show_header
+        echo -e "  ${C_TITLE}▸ ${L[backup_tasks]}${C_RESET}"
+        echo ""
+        
+        if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
+            echo -e "  ${C_MUTED}(${L[no_tasks]})${C_RESET}"
+        else
+            local i=1 task_id
+            for task_id in "${TASK_IDS[@]}"; do
+                local flags=""
+                [[ "$task_id" == "$ACTIVE_TASK_ID" ]] && flags+=" ${L[current_task]}"
+                [[ "$task_id" == "$DEFAULT_TASK_ID" ]] && flags+=" ${L[default_task]}"
+                printf "    ${C_MENU_NUM}%d${C_RESET}) %s${C_MUTED}%s${C_RESET}\n" "$i" "$(task_display_name "$task_id")" "${flags:+ [$flags]}"
+                printf "       ${C_MUTED}%s: %s | %s: %s | %s: %s${C_RESET}\n" \
+                    "${L[prefix]}" "$(task_prefix_display "$task_id")" \
+                    "${L[backup_directories]}" "$(task_dir_count "$task_id")" \
+                    "${L[scheduled_backup]}" "$(task_schedule_count "$task_id")"
+                ((i++))
+            done
+        fi
+        
+        echo ""
+        print_line '─'
+        menu_item "1-${#TASK_IDS[@]}" "${L[edit_task]}"
+        menu_item "a" "${L[add_task]}"
+        menu_item "d" "${L[delete_task]}"
+        menu_item "0" "${L[back]}"
+        
+        echo ""
+        echo -ne "  ${L[select_option]} ${C_MUTED}[1-${#TASK_IDS[@]}/a/d/0]${C_RESET}: "
+        local choice new_task_name delete_idx delete_task_id
+        read -r choice
+        
+        case $choice in
+            a|A)
+                new_task_name="$(default_task_name)"
+                input_field "${L[task_name]}" "$new_task_name" new_task_name false
+                local new_task_id
+                new_task_id="$(create_task "$new_task_name")"
+                ACTIVE_TASK_ID="$new_task_id"
+                load_task_context "$new_task_id"
+                save_config
+                success "${L[task_saved]}"
+                press_enter
+                ;;
+            d|D)
+                if [[ ${#TASK_IDS[@]} -le 1 ]]; then
+                    warn "${L[need_keep_one_task]}"
+                    press_enter
+                    continue
+                fi
+                echo ""
+                echo -ne "  ${C_PRIMARY}#${C_RESET}: "
+                read -r delete_idx
+                if [[ "$delete_idx" =~ ^[0-9]+$ ]] && [[ $delete_idx -ge 1 ]] && [[ $delete_idx -le ${#TASK_IDS[@]} ]]; then
+                    delete_task_id="${TASK_IDS[$((delete_idx-1))]}"
+                    if confirm "${L[confirm_delete_task]} $(task_display_name "$delete_task_id")"; then
+                        delete_task "$delete_task_id"
+                        sync_cron_jobs
+                        save_config
+                        [[ -n "$ACTIVE_TASK_ID" ]] && load_task_context "$ACTIVE_TASK_ID"
+                        success "${L[task_deleted]}"
+                    fi
+                fi
+                press_enter
+                ;;
+            0|"") return ;;
+            *)
+                if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#TASK_IDS[@]} ]]; then
+                    ACTIVE_TASK_ID="${TASK_IDS[$((choice-1))]}"
+                    edit_task_menu "$ACTIVE_TASK_ID"
+                fi
+                ;;
+        esac
+    done
+}
+
+edit_schedule_form() {
+    local schedule_id="$1"
+    local schedule_name="" task_id="" cron_expr="$SCHEDULE_CRON"
+    
+    if [[ -n "$schedule_id" ]] && schedule_exists "$schedule_id"; then
+        schedule_name="$(schedule_display_name "$schedule_id")"
+        task_id="$(schedule_get_scalar "$schedule_id" TASK)"
+        cron_expr="$(schedule_get_scalar "$schedule_id" CRON)"
+    fi
+    
+    show_header
+    echo -e "  ${C_TITLE}▸ ${L[scheduled_backup]}${C_RESET}"
+    echo ""
+    
+    local selected_task=""
+    selected_task=$(prompt_task_selection "${L[schedule_task]}" "${task_id:-${DEFAULT_TASK_ID:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}}") || return 1
+    task_id="$selected_task"
+    
+    echo ""
+    input_field "${L[schedule_name]}" "$schedule_name" schedule_name false
+    echo ""
+    echo -e "  ${C_MUTED}${L[cron_examples]}:${C_RESET}"
+    echo -e "    ${C_MUTED}0 3 * * *${C_RESET}   ${L[cron_daily]}"
+    echo -e "    ${C_MUTED}0 */6 * * *${C_RESET} ${L[cron_6hours]}"
+    echo -e "    ${C_MUTED}0 0 * * 0${C_RESET}   ${L[cron_weekly]}"
+    echo ""
+    input_field "${L[cron_expression]}" "$cron_expr" cron_expr false
+    
+    [[ -z "$schedule_name" ]] && schedule_name="$(task_display_name "$task_id")"
+    
+    if [[ -n "$schedule_id" ]] && schedule_exists "$schedule_id"; then
+        schedule_set_scalar "$schedule_id" NAME "$schedule_name"
+        schedule_set_scalar "$schedule_id" TASK "$task_id"
+        schedule_set_scalar "$schedule_id" CRON "$cron_expr"
+    else
+        create_schedule "$schedule_name" "$task_id" "$cron_expr" >/dev/null
+    fi
+    
+    sync_cron_jobs
+    save_config
+    success "${L[schedule_saved]}"
+    press_enter
+    return 0
+}
+
 menu_cron() {
     while true; do
         show_header
         echo -e "  ${C_TITLE}▸ ${L[scheduled_backup]}${C_RESET}"
         echo ""
         
-        local cron_job=$(get_cron_status)
-        if [[ -n "$cron_job" ]]; then
-            echo -e "  ${L[cron_status]}: $(status_badge ok "${L[cron_enabled]}")"
-            echo -e "  ${C_MUTED}$cron_job${C_RESET}"
+        if [[ ${#SCHEDULE_IDS[@]} -eq 0 ]]; then
+            echo -e "  ${C_MUTED}(${L[no_schedules]})${C_RESET}"
         else
+            local i=1 schedule_id
+            for schedule_id in "${SCHEDULE_IDS[@]}"; do
+                local task_id schedule_state schedule_label
+                task_id="$(schedule_get_scalar "$schedule_id" TASK)"
+                if schedule_installed "$schedule_id"; then
+                    schedule_state="ok"
+                    schedule_label="${L[cron_enabled]}"
+                else
+                    schedule_state="off"
+                    schedule_label="${L[cron_disabled]}"
+                fi
+                printf "    ${C_MENU_NUM}%d${C_RESET}) %s %s\n" \
+                    "$i" "$(schedule_display_name "$schedule_id")" \
+                    "$(status_badge "$schedule_state" "$schedule_label")"
+                printf "       ${C_MUTED}%s: %s | %s${C_RESET}\n" "${L[schedule_task]}" "$(task_display_name "$task_id")" "$(schedule_get_scalar "$schedule_id" CRON)"
+                ((i++))
+            done
+        fi
+        
+        local cron_job
+        cron_job="$(get_cron_status)"
+        if [[ -n "$cron_job" ]]; then
+            echo ""
+            echo -e "  ${L[cron_status]}: $(status_badge ok "${L[cron_enabled]}")"
+            echo "$cron_job" | sed 's/^/    /'
+        else
+            echo ""
             echo -e "  ${L[cron_status]}: $(status_badge off "${L[cron_disabled]}")"
         fi
         
         echo ""
         print_line '─'
         
-        menu_item "1" "${L[enable_update]}"
+        menu_item "1-${#SCHEDULE_IDS[@]}" "${L[edit_schedule]}"
+        menu_item "a" "${L[add_schedule]}"
+        menu_item "d" "${L[delete_schedule]}"
+        menu_item "s" "${L[sync_schedules]}"
         menu_item "2" "${L[disable_cron]}"
         menu_item "0" "${L[back]}"
         
         echo ""
-        echo -ne "  ${L[select_option]} ${C_MUTED}[0-2]${C_RESET}: "
+        echo -ne "  ${L[select_option]} ${C_MUTED}[1-${#SCHEDULE_IDS[@]}/a/d/s/2/0]${C_RESET}: "
+        local choice del_idx del_schedule_id
         read -r choice
         
         case $choice in
-            1)
+            a|A) edit_schedule_form "" ;;
+            d|D)
+                if [[ ${#SCHEDULE_IDS[@]} -eq 0 ]]; then
+                    press_enter
+                    continue
+                fi
                 echo ""
-                echo -e "  ${C_MUTED}${L[cron_examples]}:${C_RESET}"
-                echo -e "    ${C_MUTED}0 3 * * *${C_RESET}   ${L[cron_daily]}"
-                echo -e "    ${C_MUTED}0 */6 * * *${C_RESET} ${L[cron_6hours]}"
-                echo -e "    ${C_MUTED}0 0 * * 0${C_RESET}   ${L[cron_weekly]}"
-                echo ""
-                input_field "${L[cron_expression]}" "$SCHEDULE_CRON" SCHEDULE_CRON
-                install_cron
+                echo -ne "  ${C_PRIMARY}#${C_RESET}: "
+                read -r del_idx
+                if [[ "$del_idx" =~ ^[0-9]+$ ]] && [[ $del_idx -ge 1 ]] && [[ $del_idx -le ${#SCHEDULE_IDS[@]} ]]; then
+                    del_schedule_id="${SCHEDULE_IDS[$((del_idx-1))]}"
+                    if confirm "${L[confirm_delete_schedule]} $(schedule_display_name "$del_schedule_id")"; then
+                        delete_schedule "$del_schedule_id"
+                        sync_cron_jobs
+                        save_config
+                        success "${L[schedule_deleted]}"
+                    fi
+                fi
+                press_enter
+                ;;
+            s|S)
+                sync_cron_jobs
                 save_config
+                success "${L[cron_installed]}"
                 press_enter
                 ;;
             2)
@@ -2155,12 +3091,21 @@ menu_cron() {
                 press_enter
                 ;;
             0|"") return ;;
+            *)
+                if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#SCHEDULE_IDS[@]} ]]; then
+                    edit_schedule_form "${SCHEDULE_IDS[$((choice-1))]}"
+                fi
+                ;;
         esac
     done
 }
 
 menu_edit_config() {
     while true; do
+        local config_task_id="${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}"
+        local config_task_label="${L[not_set]}"
+        [[ -n "$config_task_id" ]] && task_exists "$config_task_id" && config_task_label="$(task_display_name "$config_task_id")"
+        
         show_header
         echo -e "  ${C_TITLE}▸ ${L[edit_config]}${C_RESET}"
         echo ""
@@ -2168,31 +3113,25 @@ menu_edit_config() {
         echo -e "  ${C_BOLD}${L[current_config]}${C_RESET}"
         show_kv "${L[cloud_provider]}" "$(get_provider_name "$CLOUD_PROVIDER")" "$C_INFO"
         show_kv "${L[bucket]}" "$S3_BUCKET" "$C_INFO"
-        show_kv "${L[prefix]}" "${BACKUP_PREFIX:-${L[root_directory]}}"
-        show_kv "${L[backup_directories]}" "${#BACKUP_DIRS[@]}"
-        show_kv "${L[compression]}" "$COMPRESS_BACKUP (${L[compression_level]} $COMPRESSION_LEVEL)"
-        show_kv "${L[sqlite_safe]}" "$SQLITE_SAFE_BACKUP"
-        show_kv "${L[max_backups]}" "$MAX_BACKUPS"
+        show_kv "${L[current_task]}" "$config_task_label" "$C_INFO"
+        show_kv "${L[backup_tasks]}" "${#TASK_IDS[@]}"
+        show_kv "${L[scheduled_backup]}" "${#SCHEDULE_IDS[@]}"
         
         echo ""
         print_line '─'
         
         menu_item "1" "${L[s3_settings]}"
-        menu_item "2" "${L[backup_directories]}"
-        menu_item "3" "${L[backup_settings]}"
-        menu_item "4" "${L[exclude_patterns]}"
+        menu_item "2" "${L[backup_tasks]}"
         menu_item "s" "${L[save]}"
         menu_item "0" "${L[back]}"
         
         echo ""
-        echo -ne "  ${L[select_option]} ${C_MUTED}[0-4/s]${C_RESET}: "
+        echo -ne "  ${L[select_option]} ${C_MUTED}[0-2/s]${C_RESET}: "
         read -r choice
         
         case $choice in
             1) edit_s3_config ;;
-            2) edit_backup_dirs ;;
-            3) edit_backup_options ;;
-            4) edit_exclude_patterns ;;
+            2) menu_tasks ;;
             s|S) save_config; success "${L[config_saved]} ${CONFIG_FILE}"; press_enter ;;
             0|"") return ;;
         esac
@@ -2219,7 +3158,6 @@ edit_s3_config() {
     fi
     
     input_field "${L[region]}" "$S3_REGION" S3_REGION false "region_hint"
-    input_field "${L[prefix]}" "$BACKUP_PREFIX" BACKUP_PREFIX false "prefix_hint"
     input_field "${L[access_key]}" "" S3_ACCESS_KEY true "access_key_hint"
     input_field "${L[secret_key]}" "" S3_SECRET_KEY true "secret_key_hint"
     
@@ -2296,6 +3234,9 @@ edit_backup_options() {
     echo -e "  ${C_TITLE}▸ ${L[backup_settings]}${C_RESET}"
     echo ""
     
+    input_field "${L[prefix]}" "$BACKUP_PREFIX" BACKUP_PREFIX false "prefix_hint"
+    echo ""
+    
     echo -e "  ${C_BOLD}${L[compression]}${C_RESET}"
     if confirm "${L[enable_compression]}" "$([[ "$COMPRESS_BACKUP" == "true" ]] && echo y || echo n)"; then
         COMPRESS_BACKUP=true
@@ -2362,7 +3303,7 @@ edit_exclude_patterns() {
                 fi
                 ;;
             r|R)
-                EXCLUDE_PATTERNS=("*.log" "*.tmp" "node_modules" ".git" "__pycache__" "*.pyc" ".DS_Store" "Thumbs.db")
+                EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
                 success "${L[success]}"
                 ;;
             0|"") return ;;
@@ -2463,11 +3404,19 @@ usage() {
     -v, --verbose       ${L[cli_opt_verbose]}
     -c, --config FILE   ${L[cli_opt_config]}
     --lang LANG         ${L[cli_opt_lang]}
+    --task NAME         ${L[cli_opt_task]}
+    --task-id ID        ${L[cli_opt_task_id]}
+    --scheduled         ${L[cli_opt_scheduled]}
+    --schedule-id ID    ${L[cli_opt_schedule_id]}
+    --cron EXPR         ${L[cli_opt_cron]}
+    --schedule-name N   ${L[cli_opt_schedule_name]}
 
   ${C_BOLD}${L[cli_examples]}${C_RESET}
     $SCRIPT_NAME                    # ${L[cli_cmd_menu]}
     $SCRIPT_NAME backup             # ${L[cli_cmd_backup]}
+    $SCRIPT_NAME backup --task default
     $SCRIPT_NAME setup              # ${L[cli_cmd_setup]}
+    $SCRIPT_NAME install-cron --task default --cron "0 */6 * * *"
     $SCRIPT_NAME update             # ${L[cli_cmd_update]}
     $SCRIPT_NAME --lang zh menu     # 中文菜单
 
@@ -2492,39 +3441,71 @@ show_config_cli() {
     show_kv "${L[bucket]}" "${S3_BUCKET:-${L[not_set]}}" "$C_INFO"
     show_kv "${L[endpoint]}" "$S3_ENDPOINT"
     show_kv "${L[region]}" "$S3_REGION"
-    show_kv "${L[prefix]}" "${BACKUP_PREFIX:-${L[root_directory]}}"
+    show_kv "${L[backup_tasks]}" "${#TASK_IDS[@]}"
+    show_kv "${L[scheduled_backup]}" "${#SCHEDULE_IDS[@]}"
     echo ""
     
-    echo -e "  ${C_MUTED}${L[backup_directories]} (${#BACKUP_DIRS[@]}):${C_RESET}"
-    for d in "${BACKUP_DIRS[@]}"; do
-        if [[ -d "$d" ]]; then
-            echo -e "    ${C_SUCCESS}✓${C_RESET} $d"
-        else
-            echo -e "    ${C_ERROR}✗${C_RESET} $d ${C_ERROR}(${L[not_exist]})${C_RESET}"
-        fi
+    echo -e "  ${C_BOLD}${L[backup_tasks]}${C_RESET}"
+    local task_id
+    for task_id in "${TASK_IDS[@]}"; do
+        local -a task_dirs=()
+        task_get_array "$task_id" DIRS task_dirs
+        show_kv "${L[task_name]}" "$(task_display_name "$task_id")" "$C_INFO"
+        show_kv "${L[prefix]}" "$(task_prefix_display "$task_id")"
+        show_kv "${L[backup_directories]}" "${#task_dirs[@]}"
+        show_kv "${L[max_backups]}" "$(task_get_scalar "$task_id" MAX_BACKUPS)"
+        show_kv "${L[compression]}" "$(task_get_scalar "$task_id" COMPRESS) (${L[compression_level]} $(task_get_scalar "$task_id" COMPRESSION_LEVEL))"
+        show_kv "${L[sqlite_safe]}" "$(task_get_scalar "$task_id" SQLITE_SAFE)"
+        echo -e "    ${C_MUTED}${L[scheduled_backup]}: $(task_schedule_count "$task_id")${C_RESET}"
+        local d
+        for d in "${task_dirs[@]}"; do
+            if [[ -d "$d" ]]; then
+                echo -e "      ${C_SUCCESS}✓${C_RESET} $d"
+            else
+                echo -e "      ${C_ERROR}✗${C_RESET} $d ${C_ERROR}(${L[not_exist]})${C_RESET}"
+            fi
+        done
+        echo ""
     done
-    echo ""
     
-    show_kv "${L[compression]}" "$COMPRESS_BACKUP"
-    show_kv "${L[compression_level]}" "$COMPRESSION_LEVEL"
-    show_kv "${L[sqlite_safe]}" "$SQLITE_SAFE_BACKUP"
-    show_kv "${L[max_backups]}" "$MAX_BACKUPS"
-    show_kv "${L[cron_expression]}" "$SCHEDULE_CRON"
+    echo -e "  ${C_BOLD}${L[scheduled_backup]}${C_RESET}"
+    if [[ ${#SCHEDULE_IDS[@]} -eq 0 ]]; then
+        echo -e "    ${C_MUTED}(${L[no_schedules]})${C_RESET}"
+    else
+        local schedule_id
+        for schedule_id in "${SCHEDULE_IDS[@]}"; do
+            echo -e "    ${C_INFO}•${C_RESET} $(schedule_display_name "$schedule_id") ${C_MUTED}[$(task_display_name "$(schedule_get_scalar "$schedule_id" TASK)")]${C_RESET}"
+            echo -e "      ${C_MUTED}$(schedule_get_scalar "$schedule_id" CRON)${C_RESET}"
+        done
+    fi
     echo ""
 }
 
 main() {
     local COMMAND=""
     local ARG_LANG=""
+    local -a POSITIONAL=()
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -v|--verbose) VERBOSE=true ;;
             -c|--config) shift; CONFIG_FILE="$1" ;;
             --lang) shift; ARG_LANG="$1" ;;
+            --task) shift; CLI_TASK_REF="$1" ;;
+            --task-id) shift; CLI_TASK_ID="$1" ;;
+            --scheduled) CLI_SCHEDULED=true ;;
+            --schedule-id) shift; CLI_SCHEDULE_ID="$1" ;;
+            --cron) shift; CLI_CRON_EXPR="$1" ;;
+            --schedule-name) shift; CLI_SCHEDULE_NAME="$1" ;;
             -h|--help|help) COMMAND="help" ;;
             -*) error "Unknown option: $1"; exit 1 ;;
-            *) COMMAND="$1" ;;
+            *)
+                if [[ -z "$COMMAND" ]]; then
+                    COMMAND="$1"
+                else
+                    POSITIONAL+=("$1")
+                fi
+                ;;
         esac
         shift
     done
@@ -2545,6 +3526,24 @@ main() {
     init_providers
     load_config
     
+    if [[ -n "$CLI_TASK_REF" && -z "$CLI_TASK_ID" ]]; then
+        CLI_TASK_ID="$(resolve_task_ref "$CLI_TASK_REF")"
+        if [[ -z "$CLI_TASK_ID" ]]; then
+            error "${L[invalid_option]}: ${CLI_TASK_REF}"
+            exit 1
+        fi
+    fi
+    
+    [[ -z "$CLI_TASK_ID" ]] && CLI_TASK_ID="${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}"
+    if [[ -n "$CLI_TASK_ID" ]] && ! task_exists "$CLI_TASK_ID"; then
+        error "${L[invalid_option]}: ${CLI_TASK_ID}"
+        exit 1
+    fi
+    
+    if [[ -n "$CLI_TASK_ID" ]] && task_exists "$CLI_TASK_ID"; then
+        load_task_context "$CLI_TASK_ID"
+    fi
+    
     check_dependencies || exit 1
     
     if ! check_s3_tool; then
@@ -2554,7 +3553,10 @@ main() {
         fi
     fi
     
-    log_info "vback started version=$VERSION cmd=${COMMAND:-menu} lang=$CURRENT_LANG"
+    RUN_CONTEXT=$([[ "$CLI_SCHEDULED" == "true" ]] && echo "scheduled" || echo "cli")
+    [[ "${COMMAND:-menu}" == "menu" || "${COMMAND:-menu}" == "setup" ]] && RUN_CONTEXT="interactive"
+    
+    log_info "vback started version=$VERSION cmd=${COMMAND:-menu} lang=$CURRENT_LANG task=${CLI_TASK_ID:-none} scheduled=${CLI_SCHEDULED}"
     
     case "${COMMAND:-menu}" in
         backup)
@@ -2562,6 +3564,7 @@ main() {
                 error "${L[run_setup_first]}"
                 exit 1
             fi
+            validate_config "$CLI_TASK_ID" || exit 1
             do_backup
             ;;
         menu)
@@ -2569,19 +3572,23 @@ main() {
                 setup_wizard
                 load_config
             fi
+            RUN_CONTEXT="interactive"
             menu_main
             ;;
         setup)
+            RUN_CONTEXT="interactive"
             setup_wizard
             ;;
         test)
-            validate_config || exit 1
+            validate_config "$CLI_TASK_ID" || exit 1
             [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws
             s3_test
             ;;
         status)
-            validate_config || exit 1
+            validate_config "$CLI_TASK_ID" || exit 1
             [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws
+            echo -e "${C_BOLD}$(task_display_name "$CLI_TASK_ID")${C_RESET} ${C_MUTED}(${BACKUP_PREFIX:-${L[root_directory]}})${C_RESET}"
+            echo ""
             for d in "${BACKUP_DIRS[@]}"; do
                 echo -e "${C_BOLD}$(basename "$d")${C_RESET}:"
                 s3_list "$(basename "$d")/" | sed 's/^/  /'
@@ -2589,8 +3596,12 @@ main() {
             done
             ;;
         install-cron)
-            validate_config || exit 1
-            install_cron
+            validate_config "$CLI_TASK_ID" || exit 1
+            if [[ -n "$CLI_CRON_EXPR" || -n "$CLI_SCHEDULE_NAME" || -n "$CLI_SCHEDULE_ID" || ${#SCHEDULE_IDS[@]} -eq 0 ]]; then
+                install_cron "$CLI_TASK_ID" "${CLI_CRON_EXPR:-${SCHEDULE_CRON:-0 3 * * *}}" "$CLI_SCHEDULE_NAME" "$CLI_SCHEDULE_ID"
+            else
+                install_cron
+            fi
             ;;
         remove-cron)
             remove_cron

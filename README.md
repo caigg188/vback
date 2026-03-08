@@ -1,10 +1,10 @@
 <div align="center">
 
 ```
-        _                _    
+        _                _
  __   _| |__   __ _  ___| | __
  \ \ / / '_ \ / _` |/ __| |/ /
-  \ V /| |_) | (_| | (__|   < 
+  \ V /| |_) | (_| | (__|   <
    \_/ |_.__/ \__,_|\___|_|\_\
 ```
 
@@ -14,12 +14,11 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Bash](https://img.shields.io/badge/Bash-4.0+-green.svg)](https://www.gnu.org/software/bash/)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
 [![GitHub stars](https://img.shields.io/github/stars/caigg188/vback?style=social)](https://github.com/caigg188/vback)
 
 [English](#english) | [简体中文](#简体中文)
 
-🔗 **GitHub**: [https://github.com/caigg188/vback](https://github.com/caigg188/vback)
+GitHub: [https://github.com/caigg188/vback](https://github.com/caigg188/vback)
 
 </div>
 
@@ -27,423 +26,344 @@
 
 ## 简体中文
 
-### 🤔 这玩意儿是干嘛的？
+### 这是什么
 
-说实话，我写这个脚本纯粹是因为**懒**。
+`vback` 是一个单文件 Bash 备份脚本，用来把服务器上的目录打包后上传到 S3 兼容云存储。
 
-之前每次搞服务器备份，要么手动打包上传（累薯），要么配一堆乱七八糟的工具（烦薯），要么写个脚本结果换台机器又得重新配（气薯）。
+它的目标一直很简单：
 
-所以我就想：**能不能搞一个脚本，下载下来就能用，点几下就配好，然后就不用管了？**
+- 下载就能用
+- 菜单式配置，不折腾
+- 适合小中型项目做稳定的全量备份
 
-于是就有了 vback。
+`v1.3.0` 这次重点补了三个能力：
 
-### ✨ 它能干什么？
+- 手动执行“立即备份”时，实时显示上传进度和速度
+- 支持一个脚本里管理多个定时任务
+- 引入“备份任务”概念，每个任务可独立配置目录、云端目录、压缩与保留策略
 
-- **🚀 开箱即用** - 一个脚本搞定一切，不用装一堆依赖
-- **☁️ 多云支持** - 缤纷云、阿里云、七牛云、AWS S3、Cloudflare R2... 随便挑
-- **🔒 SQLite 安全备份** - 数据库备份不会损坏（这个坑我踩过）
-- **📦 智能压缩** - 自动压缩，省空间省流量
-- **⏰ 定时备份** - 设一次，自动跑，安心睡觉
-- **🌍 中英双语** - 国内国外都能用
-- **📱 交互友好** - 有漂亮的菜单界面，不用背命令
+### v1.3.0 新特性
 
-### 📸 截图
+- **备份任务**：一个任务可包含多个待备份目录，并独立设置 `Prefix`、压缩、SQLite 安全备份、保留数量、排除规则。
+- **多定时任务**：可以给不同备份任务分别配置不同的 cron 时间，例如同一天多次备份不同目录。
+- **手动备份进度**：在交互终端执行备份时，会显示实时上传进度与速度；cron / 重定向日志场景默认静默。
+- **兼容旧版本数据**：旧版 `~/.vback/config` 会自动映射成默认备份任务，原日志目录和原有配置可继续使用。
+
+### 功能概览
+
+- **开箱即用**：单脚本，无复杂部署
+- **多云支持**：缤纷云 S4 / Cloudflare R2 / AWS S3 / 阿里云 OSS / 七牛云 / Google Cloud / 自定义 S3
+- **SQLite 安全备份**：优先使用 `.backup`
+- **压缩上传**：默认 `tar + gzip`
+- **备份任务管理**：一个脚本可管理多个备份任务
+- **多定时任务**：支持多个 cron 计划
+- **双语界面**：中文 / English
+
+### 截图
 
 <details>
-<summary>点击展开看截图</summary>
+<summary>点击展开</summary>
 
 <br>
-
-**主界面**
 
 <img src="imgs/ScreenShot_001.png" width="600" alt="主界面">
 
 <br><br>
 
-**配置向导**
-
 <img src="imgs/ScreenShot_003.png" width="600" alt="配置向导">
 
 <br><br>
-
-**备份过程**
 
 <img src="imgs/ScreenShot_004.png" width="600" alt="备份过程">
 
 </details>
 
-
-**主界面**
-
-```
-          _                _    
-   __   _| |__   __ _  ___| | __
-   \ \ / / '_ \ / _` |/ __| |/ /
-    \ V /| |_) | (_| | (__|   < 
-     \_/ |_.__/ \__,_|\___|_|\_\
-
-       更方便，更省心  v1.1.0
-
-    一款上手即用的服务器数据备份脚本
-    🔗 https://github.com/caigg188/vback
-
-  ╭──────────────────────────────────────────────────╮
-  │ ☁  缤纷云 S4 › my-bucket                         │
-  │ ● 定时备份  ● 压缩  ● SQLite                      │
-  ╰──────────────────────────────────────────────────╯
-
-  请选择
-
-  ── 立即备份 ──
-    1)  立即备份           执行完整备份
-    2)  查看备份           列出云端文件
-    3)  测试连接           验证 S3 配置
-
-  ── 编辑配置 ──
-    4)  定时备份           自动备份设置
-    5)  编辑配置           修改参数设置
-    6)  查看日志           最近操作记录
-```
-
-**备份过程**
-
-```
-  ╭──────────────────────────────────────────────────╮
-  │                   开始备份                        │
-  │              2024-01-15 03:00:00                  │
-  │              my-bucket/backups                   │
-  ╰──────────────────────────────────────────────────╯
-
-  ▸ 正在备份: /var/www/myproject
-  ▸ 源: 256.5 MB, 1,234 个文件
-  ▸ SQLite: 3 个数据库
-  ▸ 准备文件...
-  ▸ 压缩中 (压缩级别 6)...
-  ✓ 上传完成: myproject/myproject_20240115_030000.tar.gz
-  ▸ 传输: 89.2 MB @ 12.5 MB/s
-  ▸ 耗时: 7s
-```
-
-</details>
-
-### 🚀 快速开始
-
-**一行命令安装：**
+### 快速开始
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/caigg188/vback/main/vback.sh -o vback.sh && chmod +x vback.sh && ./vback.sh
+curl -fsSL https://raw.githubusercontent.com/caigg188/vback/main/vback.sh -o vback.sh \
+  && chmod +x vback.sh \
+  && ./vback.sh
 ```
 
-或者手动：
+第一次运行会自动进入配置向导。
 
-```bash
-# 下载
-wget https://raw.githubusercontent.com/caigg188/vback/main/vback.sh
+### 核心概念
 
-# 加执行权限
-chmod +x vback.sh
+#### 1. 全局云配置
 
-# 运行
-./vback.sh
-```
+这一层配置的是 S3 连接信息：
 
-第一次运行会自动进入配置向导，跟着提示走就行，**不用看文档**。
+- 云厂商
+- Access Key / Secret Key
+- Endpoint
+- Bucket
+- Region
 
-### 📖 使用方法
+#### 2. 备份任务
 
-#### 交互模式（推荐新手）
+一个“备份任务”对应一组独立的备份策略，包含：
+
+- 多个本地目录
+- 一个云端目录前缀 `Prefix`
+- 压缩开关与压缩级别
+- SQLite 安全备份开关
+- 备份保留数量
+- 排除规则
+
+可以理解为：旧版本里那一套“备份目录 + Prefix + 压缩设置”，在 `v1.3.0` 里被正式抽象成了一个任务。
+
+#### 3. 定时任务
+
+定时任务现在和备份任务解耦：
+
+- 先创建备份任务
+- 再给某个备份任务配置一个或多个 cron 表达式
+
+这样就可以实现：
+
+- 任务 A 每天凌晨备份
+- 任务 B 每 6 小时备份一次
+- 同一个任务一天内跑多次
+
+### 使用方式
+
+#### 交互模式
 
 ```bash
 ./vback.sh
 ```
 
-然后看菜单点就行。
+推荐直接用菜单：
 
-#### 命令行模式（适合老手/脚本调用）
+- `立即备份`
+- `定时备份`
+- `编辑配置 -> 备份任务`
+- `编辑配置 -> S3 设置`
+
+#### 命令行模式
 
 ```bash
-# 立即备份
+# 打开菜单
+./vback.sh
+
+# 立即备份默认任务
 ./vback.sh backup
+
+# 立即备份指定任务
+./vback.sh backup --task web
+./vback.sh backup --task-id task_web
+
+# 查看指定任务的云端备份
+./vback.sh status --task web
 
 # 测试连接
 ./vback.sh test
 
-# 查看云端备份
-./vback.sh status
-
-# 安装定时任务（每天自动备份）
+# 同步已配置的所有定时任务到 crontab
 ./vback.sh install-cron
+
+# 直接创建一个定时任务并同步
+./vback.sh install-cron --task web --cron "0 */6 * * *" --schedule-name "web-6h"
+
+# 移除当前安装到 crontab 的 vback 定时任务
+./vback.sh remove-cron
 
 # 查看当前配置
 ./vback.sh config
 
-# 重新配置
+# 重新进入配置向导
 ./vback.sh setup
-
-# 帮助
-./vback.sh help
 ```
 
-#### 一些有用的参数
+#### 常用参数
 
 ```bash
-# 详细输出（排查问题用）
+# 详细输出
 ./vback.sh -v backup
 
-# 指定配置文件
+# 指定配置目录中的 config 文件
 ./vback.sh -c /path/to/config backup
 
 # 指定语言
 ./vback.sh --lang zh
 ./vback.sh --lang en
+
+# 计划任务内部使用，通常不需要手动调用
+./vback.sh backup --task web --scheduled
 ```
 
-### ☁️ 支持的云服务商
-
-| 服务商 | 状态 | 说明 |
-|--------|------|------|
-| 缤纷云 S4 | ✅ 推荐 | 国内首选，便宜好用 |
-| 阿里云 OSS | ✅ | 国内老牌，稳定 |
-| 七牛云 Kodo | ✅ | 开发者友好 |
-| Cloudflare R2 | ✅ | 零出口费，海外首选 |
-| AWS S3 | ✅ | 行业标准 |
-| Google Cloud Storage | ✅ | GCP 用户适用 |
-| 其他 S3 兼容服务 | ✅ | MinIO 等都行 |
-
-### 🗂️ 配置文件在哪？
-
-所有数据都在 `~/.vback/` 目录：
-
-```
-~/.vback/
-├── config          # 配置文件
-├── language        # 语言设置
-└── logs/
-    └── vback.log   # 运行日志
-```
-
-**配置文件是明文的**，你可以直接编辑：
+### 定时任务示例
 
 ```bash
-vim ~/.vback/config
-```
-
-### 💡 一些使用技巧
-
-#### 1. 备份目录输入支持 Tab 补全
-
-配置备份目录时，按 Tab 键可以自动补全路径，不用手打。
-
-#### 2. 排除不需要的文件
-
-默认已经排除了 `node_modules`、`.git`、`*.log` 这些，你也可以在配置里自己加。
-
-#### 3. SQLite 数据库会自动安全备份
-
-如果你的项目用了 SQLite（比如很多 Python 项目），vback 会用 SQLite 的 `.backup` 命令来备份，**不会出现数据库损坏的问题**。
-
-这个坑我踩过——直接 cp 正在写入的 SQLite 文件，恢复的时候就傻眼了。
-
-#### 4. 定时备份建议
-
-```bash
-# 每天凌晨 3 点（推荐）
+# 每天 03:00
 0 3 * * *
 
 # 每 6 小时
 0 */6 * * *
 
-# 每周日凌晨
-0 0 * * 0
+# 每天 09:30 / 14:30 / 21:30
+30 9,14,21 * * *
+
+# 每周日 02:00
+0 2 * * 0
 ```
 
-### ❓ 常见问题
+### 目录结构
 
-<details>
-<summary><b>Q: 备份失败，提示连接错误？</b></summary>
+`v1.3.0` 起，`~/.vback/` 目录通常如下：
 
-先跑一下测试：
-
-```bash
-./vback.sh test
+```text
+~/.vback/
+├── config          # 全局配置 + 旧版兼容镜像字段
+├── tasks           # 备份任务定义
+├── schedules       # 定时任务定义
+├── language        # 语言设置
+└── logs/
+    └── vback.log   # 运行日志
 ```
 
-检查：
-1. Access Key 和 Secret Key 对不对
-2. Bucket 名字对不对
-3. Endpoint 对不对（不同服务商不一样）
-4. 服务器能不能访问外网
+### 兼容旧版本
 
-</details>
+升级到 `v1.3.0` 时：
 
-<details>
-<summary><b>Q: 怎么恢复备份？</b></summary>
+- 旧版 `config` 会自动迁移成一个默认备份任务
+- 旧日志目录 `~/.vback/logs/` 不会被破坏
+- 旧的 `backup / install-cron / remove-cron` 命令仍然可以继续使用
+- 旧 cron 行在脚本更新后仍可继续执行；当你重新同步定时任务时，会切换到新的多任务模型
 
-vback 目前只管备份，不管恢复（保持简单）。
+也就是说，正常更新脚本后，原来的配置和日志可以延续使用。
 
-恢复很简单，自己下载下来解压就行：
+### 恢复方式
+
+`vback` 只负责备份，不负责恢复。恢复时直接下载对应归档并解压即可。
 
 ```bash
-# 用 s3cmd 下载
-s3cmd get s3://your-bucket/backup/xxx.tar.gz
+# s3cmd 示例
+s3cmd get s3://your-bucket/your-prefix/project_20260308_030000.tar.gz
 
 # 解压
-tar -xzf xxx.tar.gz
+tar -xzf project_20260308_030000.tar.gz
 ```
 
-</details>
+### 常见问题
 
-<details>
-<summary><b>Q: 定时任务没有执行？</b></summary>
+#### 1. 手动备份为什么有进度，cron 里没有？
 
-1. 检查 cron 服务有没有在跑：`systemctl status cron`
-2. 看看 cron 日志：`grep CRON /var/log/syslog`
-3. 手动跑一次看看有没有报错：`./vback.sh backup`
+这是设计行为：
 
-</details>
+- 手动交互终端：显示实时上传进度和速度
+- cron / 重定向日志：默认关闭进度，避免日志被刷满
 
-<details>
-<summary><b>Q: 支持增量备份吗？</b></summary>
+#### 2. 可以同时有多个定时任务吗？
 
-目前不支持，每次都是全量备份。
+可以。`v1.3.0` 已支持给同一个备份任务配置多个计划，也支持不同任务分别配置不同计划。
 
-说实话，对于大多数小项目，全量备份 + 压缩已经够用了。增量备份会把事情搞复杂，恢复的时候也麻烦。
+#### 3. 旧配置升级会不会丢？
 
-如果你的数据量真的很大（几十 GB 以上），可能需要考虑其他方案。
+不会。旧配置会自动映射成一个默认备份任务，并继续保留兼容字段。
 
-</details>
+#### 4. 支持增量备份吗？
 
-<details>
-<summary><b>Q: 可以同时备份到多个云吗？</b></summary>
+暂不支持。目前仍是全量备份，定位是简单、稳定、可维护。
 
-目前不行，一个配置只能对应一个云。
+### 系统要求
 
-但你可以复制多份脚本，用不同的配置文件：
+- Linux / macOS
+- Bash 4.0+
+- 必需：`tar`、`gzip`
+- 可选：`rsync`、`sqlite3`
+- 上传工具：`s3cmd` 或 `aws-cli`
 
-```bash
-./vback.sh -c ~/.vback/config-aliyun backup
-./vback.sh -c ~/.vback/config-r2 backup
-```
-
-</details>
-
-### 🛠️ 系统要求
-
-- **操作系统**: Linux / macOS
-- **Bash**: 4.0+
-- **必需**: `tar`, `gzip`
-- **可选**: `rsync`（更快）, `sqlite3`（SQLite 安全备份）, `s3cmd` 或 `aws-cli`（会自动安装）
-
-### 🤝 贡献
-
-欢迎提 Issue 和 PR！
-
-如果你发现了 bug，或者有什么好想法，直接开 Issue 就行，不用客气。
-
-PR 的话，尽量保持代码风格一致，加点注释说明改了啥。
-
-### 📜 License
+### License
 
 MIT
-
-### ⭐ Star History
-
-如果这个项目帮到了你，给个 Star 呗，让更多人看到。
-
-[![Star History Chart](https://api.star-history.com/svg?repos=caigg188/vback&type=Date)](https://star-history.com/#caigg188/vback&Date)
 
 ---
 
 ## English
 
-### 🤔 What is this?
+### Overview
 
-Honestly, I built this because I'm **lazy**.
+`vback` is a single-file Bash backup script for packaging local directories and uploading them to S3-compatible object storage.
 
-Every time I needed to backup my servers, I either had to manually tar and upload (exhausting), set up a bunch of complicated tools (annoying), or write a script that I'd have to reconfigure on every new machine (frustrating).
+`v1.3.0` adds three major improvements:
 
-So I thought: **What if there was a script that just works out of the box?**
+- real-time upload progress and speed for manual backups
+- multiple scheduled jobs in one installation
+- first-class backup tasks, each with its own directories and remote prefix
 
-That's vback.
+### Highlights
 
-### ✨ Features
+- **Backup tasks**: each task can manage multiple source directories, its own remote prefix, compression settings, retention, SQLite-safe mode, and exclude patterns
+- **Multiple schedules**: assign one or more cron expressions to any backup task
+- **Manual progress view**: interactive backups now show live upload progress and speed
+- **Backward compatibility**: old `~/.vback/config` data is auto-mapped into a default task
 
-- **🚀 Ready to use** - One script, no complicated setup
-- **☁️ Multi-cloud** - AWS S3, Cloudflare R2, Aliyun OSS, Qiniu, and more
-- **🔒 SQLite safe backup** - No more corrupted databases
-- **📦 Smart compression** - Saves space and bandwidth
-- **⏰ Scheduled backups** - Set it and forget it
-- **🌍 Bilingual** - English and Chinese
-- **📱 Interactive UI** - Nice menus, no commands to memorize
-
-### 🚀 Quick Start
+### Quick Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/caigg188/vback/main/vback.sh -o vback.sh && chmod +x vback.sh && ./vback.sh
+curl -fsSL https://raw.githubusercontent.com/caigg188/vback/main/vback.sh -o vback.sh \
+  && chmod +x vback.sh \
+  && ./vback.sh
 ```
 
-First run will launch the setup wizard. Just follow the prompts.
-
-### 📖 Usage
+### Commands
 
 ```bash
-# Interactive mode
+# interactive menu
 ./vback.sh
 
-# Backup now
+# backup default task
 ./vback.sh backup
 
-# Test connection
+# backup a specific task
+./vback.sh backup --task web
+./vback.sh backup --task-id task_web
+
+# show remote backups for a task
+./vback.sh status --task web
+
+# test S3 connectivity
 ./vback.sh test
 
-# Install cron job
+# sync all configured schedules into crontab
 ./vback.sh install-cron
 
-# Show config
-./vback.sh config
+# create one schedule from CLI and sync it
+./vback.sh install-cron --task web --cron "0 */6 * * *" --schedule-name "web-6h"
 
-# Help
-./vback.sh help
+# remove installed vback cron entries
+./vback.sh remove-cron
 ```
 
-### ☁️ Supported Cloud Providers
+### Data Layout
 
-- ✅ AWS S3
-- ✅ Cloudflare R2 (recommended for global)
-- ✅ Aliyun OSS
-- ✅ Qiniu Kodo
-- ✅ Bitiful S4
-- ✅ Google Cloud Storage
-- ✅ Any S3-compatible service
-
-### 📁 Where's the config?
-
-Everything is in `~/.vback/`:
-
-```
+```text
 ~/.vback/
-├── config          # Configuration
-├── language        # Language preference
+├── config
+├── tasks
+├── schedules
+├── language
 └── logs/
-    └── vback.log   # Logs
+    └── vback.log
 ```
 
-### 🤝 Contributing
+### Compatibility
 
-Issues and PRs are welcome!
+- existing `config` files are upgraded automatically into the new task model
+- old logs remain untouched
+- old `backup`, `install-cron`, and `remove-cron` commands still work
+- old cron entries keep working until you resync schedules
 
-### 📜 License
+### Requirements
+
+- Linux / macOS
+- Bash 4.0+
+- required: `tar`, `gzip`
+- optional: `rsync`, `sqlite3`
+- upload tool: `s3cmd` or `aws-cli`
+
+### License
 
 MIT
-
----
-
-<div align="center">
-
-**If this helped you, consider giving it a ⭐**
-
-🔗 [https://github.com/caigg188/vback](https://github.com/caigg188/vback)
-
-Made with ☕ and mass laziness
-
-</div>
