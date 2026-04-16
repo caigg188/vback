@@ -1,6 +1,7 @@
 #!/bin/bash
+set -o pipefail
 # ============================================================================
-# vback - 优雅的服务器备份工具 v1.3.1
+# vback - 优雅的服务器备份工具 v1.4.0
 # Elegant Server Backup Tool
 # 
 # 更方便，更省心 | Effortless & Worry-free
@@ -13,9 +14,19 @@
 # 📜 License: MIT
 # ============================================================================
 
-VERSION="1.3.1"
+VERSION="1.4.0"
 SCRIPT_NAME=$(basename "$0")
-SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
+SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || (
+    # macOS fallback: resolve symlinks manually
+    _dir=$(cd "$(dirname "$0")" && pwd)
+    _base=$(basename "$0")
+    while [[ -L "$_dir/$_base" ]]; do
+        _target=$(readlink "$_dir/$_base" 2>/dev/null)
+        _dir=$(cd "$(dirname "$_target")" && pwd)
+        _base=$(basename "$_target")
+    done
+    echo "$_dir/$_base"
+))
 GITHUB_URL="https://github.com/caigg188/vback"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/caigg188/vback/main/vback.sh"
 
@@ -64,14 +75,22 @@ CLI_SCHEDULED=false
 RUN_CONTEXT="interactive"
 
 # 运行时变量
-LOCK_FILE="/tmp/vback.lock"
-TEMP_DIR="/tmp/vback-$$"
-S3CMD_CFG="/tmp/.s3cfg-vback-$$"
+LOCK_DIR=""  # set by acquire_lock using mktemp -d
+LOCK_FILE=""
+TEMP_DIR=""  # set by init_temp_dir using mktemp -d
+S3CMD_CFG="" # set by init_temp_dir using mktemp
 VERBOSE="${VERBOSE:-false}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 LOG_MAX_SIZE=10485760
 LOG_BACKUP_COUNT=5
 CURRENT_LANG="en"
+
+# 初始化临时目录（使用 mktemp 避免可预测路径的符号链接攻击）
+init_temp_dir() {
+    TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vback.XXXXXX" 2>/dev/null) || TEMP_DIR="/tmp/vback-$$"
+    S3CMD_CFG=$(mktemp "${TMPDIR:-/tmp}/.s3cfg-vback.XXXXXX" 2>/dev/null) || S3CMD_CFG="/tmp/.s3cfg-vback-$$"
+    chmod 600 "$S3CMD_CFG" 2>/dev/null
+}
 
 # ============================================================================
 # 多语言系统
@@ -377,6 +396,23 @@ load_lang_en() {
     L[cli_cmd_update]="Update script"
     L[cli_cmd_reset]="Factory reset"
     L[cli_cmd_help]="Show help"
+    L[cli_cmd_restore]="Restore from backup"
+
+    # Restore
+    L[restore_title]="Restore"
+    L[restore_need_key]="Specify backup key to restore"
+    L[restore_directory]="Destination directory"
+    L[restore_dest_hint]="Leave empty for current directory"
+    L[confirm_restore]="Restore"
+    L[restore_complete]="Restore complete"
+    L[restore_failed]="Restore failed"
+    L[downloading]="Downloading"
+    L[extracting]="Extracting"
+    L[available_backups]="Available backups"
+    L[upload_verify_failed]="Upload verification failed (MD5 mismatch)"
+    L[warn_optional_deps]="Optional tools missing (some features may not work)"
+    L[warn_no_rsync]="rsync not available: using cp fallback (exclude patterns and SQLite safe backup may not work)"
+    L[compress_partial_warning]="Some files could not be read (partial backup)"
     L[cli_opt_verbose]="Verbose output"
     L[cli_opt_config]="Config file path"
     L[cli_opt_lang]="Language (en/zh)"
@@ -688,6 +724,23 @@ load_lang_zh() {
     L[cli_cmd_update]="更新脚本"
     L[cli_cmd_reset]="恢复出厂设置"
     L[cli_cmd_help]="显示帮助"
+    L[cli_cmd_restore]="从备份恢复"
+
+    # 恢复
+    L[restore_title]="恢复备份"
+    L[restore_need_key]="请指定要恢复的备份键"
+    L[restore_directory]="目标目录"
+    L[restore_dest_hint]="留空则为当前目录"
+    L[confirm_restore]="恢复"
+    L[restore_complete]="恢复完成"
+    L[restore_failed]="恢复失败"
+    L[downloading]="正在下载"
+    L[extracting]="正在解压"
+    L[available_backups]="可用的备份"
+    L[upload_verify_failed]="上传校验失败 (MD5 不匹配)"
+    L[warn_optional_deps]="可选工具缺失 (部分功能可能不可用)"
+    L[warn_no_rsync]="rsync 不可用: 使用 cp 替代 (排除规则和 SQLite 安全备份可能失效)"
+    L[compress_partial_warning]="部分文件无法读取 (不完整备份)"
     L[cli_opt_verbose]="详细输出"
     L[cli_opt_config]="配置文件路径"
     L[cli_opt_lang]="语言 (en/zh)"
@@ -887,7 +940,10 @@ setup_colors() {
 # ============================================================================
 
 init_data_dir() {
-    mkdir -p "$DATA_DIR" "$LOG_DIR" 2>/dev/null
+    if ! mkdir -p "$DATA_DIR" "$LOG_DIR" 2>/dev/null; then
+        echo "Error: Cannot create data directory $DATA_DIR" >&2
+        return 1
+    fi
     chmod 700 "$DATA_DIR" 2>/dev/null
 }
 
@@ -1137,12 +1193,26 @@ save_current_task_context() {
     task_set_array "$task_id" EXCLUDES "${EXCLUDE_PATTERNS[@]}"
 }
 
+# 验证数据文件安全性：确保只包含合法的 shell 赋值语句
+validate_data_file() {
+    local file="$1"
+    [[ ! -f "$file" ]] && return 1
+    # 检查文件是否包含可疑内容（命令替换、管道、重定向等）
+    local suspicious
+    suspicious=$(grep -n '`\|^\s*exec\s\|^\s*source\s\|^\s*\.\s\||\s*>\s*\$(' "$file" 2>/dev/null | grep -v '^#' | head -1)
+    if [[ -n "$suspicious" ]]; then
+        log_error "Security: suspicious content in $file: $suspicious"
+        return 1
+    fi
+    return 0
+}
+
 load_tasks_store() {
-    [[ -f "$TASKS_FILE" ]] && source "$TASKS_FILE"
+    [[ -f "$TASKS_FILE" ]] && validate_data_file "$TASKS_FILE" && source "$TASKS_FILE"
 }
 
 load_schedules_store() {
-    [[ -f "$SCHEDULES_FILE" ]] && source "$SCHEDULES_FILE"
+    [[ -f "$SCHEDULES_FILE" ]] && validate_data_file "$SCHEDULES_FILE" && source "$SCHEDULES_FILE"
 }
 
 save_tasks_store() {
@@ -1254,7 +1324,7 @@ ensure_task_store() {
 }
 
 load_config() {
-    [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+    [[ -f "$CONFIG_FILE" ]] && validate_data_file "$CONFIG_FILE" && source "$CONFIG_FILE"
     load_tasks_store
     load_schedules_store
     migrate_legacy_config
@@ -1267,7 +1337,7 @@ save_config() {
     save_tasks_store
     save_schedules_store
     
-    local mirror_task_id="${DEFAULT_TASK_ID:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}"
+    local mirror_task_id="$(resolve_default_task_id)"
     local mirror_prefix="" mirror_max_backups=7 mirror_compress=true mirror_compression_level=6 mirror_sqlite_safe=true
     local -a mirror_dirs=() mirror_excludes=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
     
@@ -1305,10 +1375,10 @@ BACKUP_DIRS=(
 $(array_literal "${mirror_dirs[@]}")
 )
 BACKUP_PREFIX=$(printf '%q' "$mirror_prefix")
-MAX_BACKUPS=$mirror_max_backups
-COMPRESS_BACKUP=$mirror_compress
-COMPRESSION_LEVEL=$mirror_compression_level
-SQLITE_SAFE_BACKUP=$mirror_sqlite_safe
+MAX_BACKUPS=$(printf '%q' "${mirror_max_backups:-7}")
+COMPRESS_BACKUP=$(printf '%q' "${mirror_compress:-true}")
+COMPRESSION_LEVEL=$(printf '%q' "${mirror_compression_level:-6}")
+SQLITE_SAFE_BACKUP=$(printf '%q' "${mirror_sqlite_safe:-true}")
 SCHEDULE_CRON=$(printf '%q' "$mirror_schedule_cron")
 EXCLUDE_PATTERNS=(
 $(array_literal "${mirror_excludes[@]}")
@@ -1322,7 +1392,7 @@ EOF
 }
 
 needs_setup() {
-    local check_task_id="${DEFAULT_TASK_ID:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}"
+    local check_task_id="$(resolve_default_task_id)"
     local -a check_dirs=()
     
     [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" || -z "$S3_BUCKET" || -z "$check_task_id" ]] && return 0
@@ -1338,7 +1408,7 @@ declare -A LOG_LEVELS=([DEBUG]=0 [INFO]=1 [WARN]=2 [ERROR]=3)
 
 rotate_logs() {
     [[ ! -f "$LOG_FILE" ]] && return
-    local size=$(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE" 2>/dev/null || echo 0)
+    local size=$(get_file_size "$LOG_FILE")
     
     if [[ $size -ge $LOG_MAX_SIZE ]]; then
         for ((i=LOG_BACKUP_COUNT-1; i>=1; i--)); do
@@ -1481,7 +1551,16 @@ input_path() {
     echo -ne "${C_RESET}"
     
     if [[ -n "$input" ]]; then
-        input=$(eval echo "$input" 2>/dev/null || echo "$input")
+        # 安全展开 ~ 和环境变量，不使用 eval
+        input="${input//\~/$HOME}"
+        while [[ "$input" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)\} ]]; do
+            local ename="${BASH_REMATCH[1]}"
+            input="${input//\$\{${ename}\}/${!ename}}"
+        done
+        while [[ "$input" =~ \$([a-zA-Z_][a-zA-Z0-9_]*) ]]; do
+            local ename="${BASH_REMATCH[1]}"
+            input="${input//\$${ename}/${!ename}}"
+        done
         eval "$var_name=\"\$input\""
     elif [[ -n "$current" ]]; then
         eval "$var_name=\"\$current\""
@@ -1656,6 +1735,29 @@ check_s3_tool() {
     return 1
 }
 
+# 统一 S3 工具初始化（替代重复的 [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws）
+setup_s3_tool() {
+    if [[ "$S3_TOOL" == "s3cmd" ]]; then
+        setup_s3cmd
+    elif [[ "$S3_TOOL" == "aws" ]]; then
+        setup_aws
+    else
+        log_error "No S3 tool configured (neither s3cmd nor aws-cli)"
+        return 1
+    fi
+}
+
+# 跨平台获取文件大小
+get_file_size() {
+    local file="$1"
+    stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo 0
+}
+
+# 解析默认任务 ID（消除重复的三级 fallback）
+resolve_default_task_id() {
+    echo "${DEFAULT_TASK_ID:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}"
+}
+
 install_s3cmd() {
     info "${L[installing]} s3cmd..."
     
@@ -1685,14 +1787,23 @@ install_s3cmd() {
 }
 
 check_dependencies() {
-    local missing=()
+    local missing=() optional_missing=()
+    # 必需工具
     for cmd in tar gzip; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
-    
+    # 推荐工具（缺失时警告但不阻止）
+    for cmd in curl awk crontab; do
+        command -v "$cmd" &>/dev/null || optional_missing+=("$cmd")
+    done
+
     if [[ ${#missing[@]} -gt 0 ]]; then
         error "${L[err_missing_deps]}: ${missing[*]}"
         return 1
+    fi
+
+    if [[ ${#optional_missing[@]} -gt 0 ]]; then
+        warn "${L[warn_optional_deps]}: ${optional_missing[*]}"
     fi
     return 0
 }
@@ -1727,22 +1838,71 @@ should_show_upload_progress() {
     [[ "$RUN_CONTEXT" != "scheduled" && -t 1 && -t 2 ]]
 }
 
+S3_UPLOAD_RETRIES="${S3_UPLOAD_RETRIES:-3}"
+S3_UPLOAD_RETRY_DELAY="${S3_UPLOAD_RETRY_DELAY:-5}"
+
 s3_put() {
     local src="$1" dst=$(build_s3_path "$2") show_progress="${3:-auto}"
     [[ "$show_progress" == "auto" ]] && { should_show_upload_progress && show_progress=true || show_progress=false; }
-    
-    if [[ "$S3_TOOL" == "s3cmd" ]]; then
-        if [[ "$show_progress" == "true" ]]; then
-            s3cmd -c "$S3CMD_CFG" put --progress "$src" "s3://${S3_BUCKET}/${dst}"
+
+    local attempt=1 rc=1
+    while ((attempt <= S3_UPLOAD_RETRIES)); do
+        if [[ "$S3_TOOL" == "s3cmd" ]]; then
+            if [[ "$show_progress" == "true" ]]; then
+                s3cmd -c "$S3CMD_CFG" put --progress "$src" "s3://${S3_BUCKET}/${dst}"
+            else
+                s3cmd -c "$S3CMD_CFG" put "$src" "s3://${S3_BUCKET}/${dst}" 2>&1
+            fi
         else
-            s3cmd -c "$S3CMD_CFG" put "$src" "s3://${S3_BUCKET}/${dst}" 2>&1
+            if [[ "$show_progress" == "true" ]]; then
+                aws s3 cp "$src" "s3://${S3_BUCKET}/${dst}" $AWS_ENDPOINT
+            else
+                aws s3 cp "$src" "s3://${S3_BUCKET}/${dst}" $AWS_ENDPOINT --no-progress 2>&1
+            fi
         fi
+        rc=$?
+        [[ $rc -eq 0 ]] && break
+        ((attempt < S3_UPLOAD_RETRIES)) && log_warn "Upload attempt $attempt/$S3_UPLOAD_RETRIES failed, retrying in ${S3_UPLOAD_RETRY_DELAY}s..."
+        ((attempt < S3_UPLOAD_RETRIES)) && sleep "$S3_UPLOAD_RETRY_DELAY"
+        ((attempt++))
+    done
+    return $rc
+}
+
+# 上传后 MD5 校验
+s3_verify_upload() {
+    local src="$1" dst=$(build_s3_path "$2")
+    local local_md5 remote_md5
+
+    if ! command -v md5sum &>/dev/null && ! command -v md5 &>/dev/null; then
+        log_debug "MD5 tool not available, skipping upload verification"
+        return 0
+    fi
+
+    if command -v md5sum &>/dev/null; then
+        local_md5=$(md5sum "$src" 2>/dev/null | awk '{print $1}')
     else
-        if [[ "$show_progress" == "true" ]]; then
-            aws s3 cp "$src" "s3://${S3_BUCKET}/${dst}" $AWS_ENDPOINT
-        else
-            aws s3 cp "$src" "s3://${S3_BUCKET}/${dst}" $AWS_ENDPOINT --no-progress 2>&1
-        fi
+        local_md5=$(md5 -q "$src" 2>/dev/null)
+    fi
+    [[ -z "$local_md5" ]] && { log_warn "Cannot compute local MD5"; return 0; }
+
+    if [[ "$S3_TOOL" == "s3cmd" ]]; then
+        remote_md5=$(s3cmd -c "$S3CMD_CFG" info "s3://${S3_BUCKET}/${dst}" 2>/dev/null | grep -i "MD5 sum" | awk '{print $NF}' | tr -d '"')
+    else
+        remote_md5=$(aws s3api head-object --bucket "$S3_BUCKET" --key "$dst" $AWS_ENDPOINT --query ETag --output text 2>/dev/null | tr -d '"')
+    fi
+
+    if [[ -z "$remote_md5" ]]; then
+        log_warn "Cannot verify upload: remote MD5 not available"
+        return 0
+    fi
+
+    if [[ "$local_md5" == "$remote_md5" ]]; then
+        log_info "Upload verified: MD5 match ($local_md5)"
+        return 0
+    else
+        log_error "Upload verification failed: local=$local_md5 remote=$remote_md5"
+        return 1
     fi
 }
 
@@ -1766,7 +1926,8 @@ s3_rm() {
 
 s3_test() {
     info "${L[testing_connection]}"
-    local test_file="/tmp/vback-test-$$.txt"
+    local test_file
+    test_file=$(mktemp "${TMPDIR:-/tmp}/vback-test.XXXXXX.txt" 2>/dev/null) || test_file="/tmp/vback-test-$$.txt"
     echo "vback-test-$(date +%s)" > "$test_file"
     
     local start=$(date +%s)
@@ -1825,7 +1986,8 @@ validate_config() {
 backup_sqlite_db() {
     local db_file="$1" backup_file="$2"
     if command -v sqlite3 &>/dev/null; then
-        sqlite3 "$db_file" ".backup '${backup_file}'" 2>/dev/null && return 0
+        # 使用 .backup 命令的参数化形式，避免 SQL 注入
+        sqlite3 "$db_file" ".backup" "$backup_file" 2>/dev/null && return 0
     fi
     cp "$db_file" "$backup_file" 2>/dev/null
 }
@@ -1849,7 +2011,9 @@ prepare_safe_copy() {
     if command -v rsync &>/dev/null; then
         rsync -a "${exclude_args[@]}" "$src_dir/" "$dest_dir/" 2>/dev/null
     else
-        cp -a "$src_dir/." "$dest_dir/" 2>/dev/null
+        # cp -a 在 macOS 上可能不可用，使用 cp -pR 作为 fallback
+        cp -a "$src_dir/." "$dest_dir/" 2>/dev/null || cp -pR "$src_dir/." "$dest_dir/" 2>/dev/null
+        warn "${L[warn_no_rsync]}"
     fi
     
     if [[ "$SQLITE_SAFE_BACKUP" == "true" ]]; then
@@ -1874,7 +2038,8 @@ get_process_info() {
     local pid="$1"
     if [[ -d "/proc/$pid" ]]; then
         local cmd=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ')
-        local start_time=$(stat -c %Y "/proc/$pid" 2>/dev/null)
+        local start_time
+        start_time=$(stat -c %Y "/proc/$pid" 2>/dev/null || stat -f %m "/proc/$pid" 2>/dev/null)
         if [[ -n "$start_time" ]]; then
             local running_time=$(($(date +%s) - start_time))
             echo "CMD: $cmd"
@@ -1907,9 +2072,12 @@ kill_process() {
 }
 
 acquire_lock() {
-    if [[ -f "$LOCK_FILE" ]]; then
-        local pid=$(cat "$LOCK_FILE" 2>/dev/null)
-        
+    local lock_dir="${TMPDIR:-/tmp}/vback.lock"
+
+    if [[ -d "$lock_dir" ]]; then
+        local pid
+        pid=$(cat "$lock_dir/pid" 2>/dev/null)
+
         if [[ -n "$pid" ]]; then
             if is_process_alive "$pid"; then
                 echo ""
@@ -1920,12 +2088,12 @@ acquire_lock() {
                 echo -e "  ${C_MUTED}${L[err_lock_process_info]}:${C_RESET}"
                 get_process_info "$pid" | sed 's/^/    /'
                 echo ""
-                
+
                 if confirm "${L[err_lock_ask_kill]}" "n"; then
                     info "Terminating process $pid..."
                     if kill_process "$pid"; then
                         success "${L[err_lock_killed]}"
-                        rm -f "$LOCK_FILE"
+                        rm -rf "$lock_dir"
                         log_warn "Killed stale process $pid and removed lock"
                     else
                         error "${L[err_lock_kill_failed]}"
@@ -1936,17 +2104,24 @@ acquire_lock() {
                 fi
             else
                 warn "${L[err_lock_stale]}"
-                rm -f "$LOCK_FILE"
-                log_warn "Removed stale lock file (pid $pid not running)"
+                rm -rf "$lock_dir"
+                log_warn "Removed stale lock (pid $pid not running)"
             fi
         else
             warn "${L[err_lock_stale]}"
-            rm -f "$LOCK_FILE"
+            rm -rf "$lock_dir"
         fi
     fi
-    
-    echo $$ > "$LOCK_FILE"
-    trap 'rm -f "$LOCK_FILE" "$S3CMD_CFG"; rm -rf "$TEMP_DIR"' EXIT
+
+    # 使用 mkdir 原子操作创建锁，避免竞态条件
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        error "${L[err_task_running]}"
+        return 1
+    fi
+    echo $$ > "$lock_dir/pid"
+    LOCK_DIR="$lock_dir"
+    LOCK_FILE="$lock_dir/pid"
+    trap 'rm -rf "$LOCK_DIR" "$S3CMD_CFG"; rm -rf "$TEMP_DIR"' EXIT
     return 0
 }
 
@@ -1954,7 +2129,13 @@ acquire_lock() {
 # 备份核心
 # ============================================================================
 
-get_dir_size() { du -sb "$1" 2>/dev/null | cut -f1 || echo 0; }
+get_dir_size() {
+    # 跨平台兼容：Linux 用 du -sb，macOS 用 du -sk * 1024
+    local size
+    size=$(du -sb "$1" 2>/dev/null | cut -f1) && [[ -n "$size" ]] && echo "$size" && return
+    size=$(du -sk "$1" 2>/dev/null | cut -f1) && [[ -n "$size" ]] && echo "$((size * 1024))" && return
+    echo 0
+}
 count_files() { find "$1" -type f 2>/dev/null | wc -l; }
 count_sqlite_dbs() { find "$1" -type f \( -name "*.db" -o -name "*.sqlite" \) 2>/dev/null | wc -l; }
 
@@ -1983,7 +2164,12 @@ backup_dir() {
         s3_key="${name}/${name}_${ts}.tar.gz"
         
         info "${L[compressing]} (${L[compression_level]} ${COMPRESSION_LEVEL})..."
-        if ! tar -cf - -C "$TEMP_DIR" "$name" 2>/dev/null | gzip -"${COMPRESSION_LEVEL}" > "$archive_file" 2>/dev/null; then
+        if ! tar -cf - -C "$TEMP_DIR" "$name" 2>"${TEMP_DIR}/tar_errors.log" | gzip -"${COMPRESSION_LEVEL}" > "$archive_file" 2>/dev/null; then
+            # 显示 tar 的部分失败信息（如权限不足的文件）
+            if [[ -s "${TEMP_DIR}/tar_errors.log" ]]; then
+                warn "${L[compress_partial_warning]}"
+                head -5 "${TEMP_DIR}/tar_errors.log" | sed 's/^/    /'
+            fi
             error "${L[compress_failed]}"
             rm -rf "$work_dir"
             return 1
@@ -1992,7 +2178,11 @@ backup_dir() {
         archive_file="${TEMP_DIR}/${name}_${ts}.tar"
         s3_key="${name}/${name}_${ts}.tar"
         
-        if ! tar -cf "$archive_file" -C "$TEMP_DIR" "$name" 2>/dev/null; then
+        if ! tar -cf "$archive_file" -C "$TEMP_DIR" "$name" 2>"${TEMP_DIR}/tar_errors.log"; then
+            if [[ -s "${TEMP_DIR}/tar_errors.log" ]]; then
+                warn "${L[compress_partial_warning]}"
+                head -5 "${TEMP_DIR}/tar_errors.log" | sed 's/^/    /'
+            fi
             error "${L[tar_failed]}"
             rm -rf "$work_dir"
             return 1
@@ -2000,7 +2190,7 @@ backup_dir() {
     fi
     
     rm -rf "$work_dir"
-    local archive_size=$(stat -c%s "$archive_file" 2>/dev/null || stat -f%z "$archive_file" 2>/dev/null || echo 0)
+    local archive_size=$(get_file_size "$archive_file")
     
     info "${L[uploading]}..."
     local upload_start=$(date +%s)
@@ -2015,14 +2205,20 @@ backup_dir() {
         rc=$?
     fi
     local upload_duration=$(($(date +%s) - upload_start))
-    
+
+    # 上传后 MD5 校验
+    local verify_rc=0
+    if [[ $rc -eq 0 ]]; then
+        s3_verify_upload "$archive_file" "$s3_key" || verify_rc=$?
+    fi
+
     rm -f "$archive_file"
     local total_duration=$(($(date +%s) - start))
-    
+
     local output_has_error=false
     [[ -n "$result" ]] && echo "$result" | grep -qi "error\|fail" && output_has_error=true
-    
-    if [[ $rc -eq 0 && "$output_has_error" != "true" ]]; then
+
+    if [[ $rc -eq 0 && $verify_rc -eq 0 && "$output_has_error" != "true" ]]; then
         local speed=$(fmt_speed $archive_size $upload_duration)
         success "${L[upload_complete]}: ${C_PATH}${s3_key}${C_RESET}"
         info "${L[transfer]}: ${C_NUMBER}$(fmt_size $archive_size)${C_RESET} @ ${C_NUMBER}${speed}/s${C_RESET}"
@@ -2030,9 +2226,14 @@ backup_dir() {
         log_info "Backup success: $name size=$(fmt_size $archive_size)"
         return 0
     else
-        error "${L[upload_failed]}"
+        if [[ $verify_rc -ne 0 ]]; then
+            error "${L[upload_verify_failed]}"
+            log_error "Upload verification failed: $name"
+        else
+            error "${L[upload_failed]}"
+            log_error "Backup failed: $name"
+        fi
         [[ -n "$result" ]] && echo "$result" | head -3 | sed 's/^/    /'
-        log_error "Backup failed: $name"
         return 1
     fi
 }
@@ -2077,7 +2278,7 @@ do_backup() {
     validate_config || return 1
     acquire_lock || return 1
     
-    [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws
+    setup_s3_tool
     
     local total=${#BACKUP_DIRS[@]}
     local current=0
@@ -2163,7 +2364,7 @@ install_cron() {
     local task_id="${1:-}" cron_expr="${2:-}" schedule_name="${3:-}" schedule_id="${4:-}"
     
     if [[ -n "$task_id" || -n "$cron_expr" || ${#SCHEDULE_IDS[@]} -eq 0 ]]; then
-        task_id="${task_id:-${DEFAULT_TASK_ID:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}}"
+        task_id="${task_id:-$(resolve_default_task_id)}"
         cron_expr="${cron_expr:-${SCHEDULE_CRON:-0 3 * * *}}"
         schedule_name="${schedule_name:-$(default_schedule_name "$(task_get_scalar "$task_id" NAME)")}"
         schedule_id="${schedule_id:-}"
@@ -2207,19 +2408,24 @@ get_remote_version() {
 
 compare_versions() {
     local v1="$1" v2="$2"
-    
+
     if [[ "$v1" == "$v2" ]]; then
         echo "equal"
         return
     fi
-    
+
     local IFS='.'
     local -a ver1=($v1) ver2=($v2)
-    
+
     for ((i=0; i<${#ver1[@]} || i<${#ver2[@]}; i++)); do
+        # 去除非数字后缀（如 -beta, -rc1），仅比较数字部分
         local num1=${ver1[i]:-0}
         local num2=${ver2[i]:-0}
-        
+        num1=${num1%%[^0-9]*}
+        num2=${num2%%[^0-9]*}
+        [[ -z "$num1" ]] && num1=0
+        [[ -z "$num2" ]] && num2=0
+
         if ((num1 > num2)); then
             echo "newer"
             return
@@ -2228,7 +2434,7 @@ compare_versions() {
             return
         fi
     done
-    
+
     echo "equal"
 }
 
@@ -2298,6 +2504,139 @@ do_update() {
 }
 
 # ============================================================================
+# 恢复功能
+# ============================================================================
+
+do_restore() {
+    local s3_key="$1" dest_dir="$2"
+
+    if [[ -z "$s3_key" ]]; then
+        error "${L[restore_need_key]}"
+        return 1
+    fi
+
+    [[ -z "$dest_dir" ]] && dest_dir="."
+
+    local full_key
+    full_key=$(build_s3_path "$s3_key")
+    local filename=$(basename "$s3_key")
+    local local_file="${TEMP_DIR}/${filename}"
+
+    info "${L[downloading]}: ${C_PATH}${full_key}${C_RESET}"
+    mkdir -p "$TEMP_DIR"
+
+    local rc=0
+    if [[ "$S3_TOOL" == "s3cmd" ]]; then
+        s3cmd -c "$S3CMD_CFG" get "s3://${S3_BUCKET}/${full_key}" "$local_file" 2>&1
+        rc=$?
+    else
+        aws s3 cp "s3://${S3_BUCKET}/${full_key}" "$local_file" $AWS_ENDPOINT 2>&1
+        rc=$?
+    fi
+
+    if [[ $rc -ne 0 || ! -f "$local_file" ]]; then
+        error "${L[download_failed]}"
+        rm -f "$local_file"
+        return 1
+    fi
+
+    info "${L[extracting]}: ${C_PATH}${filename}${C_RESET} -> ${C_PATH}${dest_dir}${C_RESET}"
+    mkdir -p "$dest_dir"
+
+    if [[ "$filename" == *.tar.gz ]]; then
+        tar -xzf "$local_file" -C "$dest_dir"
+    elif [[ "$filename" == *.tar ]]; then
+        tar -xf "$local_file" -C "$dest_dir"
+    else
+        cp "$local_file" "$dest_dir/"
+    fi
+
+    if [[ $? -eq 0 ]]; then
+        success "${L[restore_complete]}: ${C_PATH}${dest_dir}${C_RESET}"
+        log_info "Restore success: $s3_key -> $dest_dir"
+    else
+        error "${L[restore_failed]}"
+        log_error "Restore failed: $s3_key"
+        return 1
+    fi
+
+    rm -f "$local_file"
+    return 0
+}
+
+menu_restore() {
+    show_header
+    echo -e "  ${C_TITLE}▸ ${L[restore_title]}${C_RESET}"
+    echo ""
+
+    local selected_task=""
+    selected_task=$(prompt_task_selection "${L[select_backup_task]}" "$(resolve_default_task_id)") || { press_enter; return; }
+    load_task_context "$selected_task"
+
+    if ! validate_config "$selected_task"; then
+        press_enter
+        return
+    fi
+
+    check_s3_tool || { error "${L[err_no_s3_tool]}"; press_enter; return; }
+    setup_s3_tool
+
+    # 列出远端备份供选择
+    echo -e "  ${C_BOLD}${L[available_backups]}${C_RESET}"
+    echo ""
+
+    local -a backup_keys=()
+    for d in "${BACKUP_DIRS[@]}"; do
+        local name=$(basename "$d")
+        local list=$(s3_list "${name}/")
+        if [[ -n "$list" ]]; then
+            echo -e "  ${C_BOLD}$name${C_RESET}"
+            echo "$list" | while read -r line; do
+                local fn=$(echo "$line" | awk '{print $4}' | xargs basename 2>/dev/null)
+                local dt=$(echo "$line" | awk '{print $1, $2}')
+                local sz=$(echo "$line" | awk '{print $3}')
+                if [[ -n "$fn" ]]; then
+                    backup_keys+=("${name}/${fn}")
+                    printf "    ${C_MENU_NUM}%d${C_RESET}) ${C_TIMESTAMP}%-16s${C_RESET}  ${C_NUMBER}%10s${C_RESET}  ${C_PATH}%s${C_RESET}\n" "${#backup_keys[@]}" "$dt" "$sz" "$fn"
+                fi
+            done
+        fi
+        echo ""
+    done
+
+    if [[ ${#backup_keys[@]} -eq 0 ]]; then
+        warn "${L[no_backups_yet]}"
+        press_enter
+        return
+    fi
+
+    echo ""
+    echo -ne "  ${L[select_option]} ${C_MUTED}[1-${#backup_keys[@]}/0]${C_RESET}: "
+    local choice
+    read -r choice
+
+    [[ "$choice" == "0" || -z "$choice" ]] && return
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#backup_keys[@]} ]]; then
+        local selected_key="${backup_keys[$((choice-1))]}"
+        echo ""
+        echo -e "  ${L[restore_dest_hint]}"
+        echo -ne "  ${C_PRIMARY}${L[restore_directory]}${C_RESET}: ${C_INPUT}"
+        read -r dest_dir
+        echo -ne "${C_RESET}"
+        [[ -z "$dest_dir" ]] && dest_dir="."
+
+        if confirm "${L[confirm_restore]} ${C_PATH}${selected_key}${C_RESET} -> ${C_PATH}${dest_dir}${C_RESET}"; then
+            do_restore "$selected_key" "$dest_dir"
+        else
+            info "${L[operation_cancelled]}"
+        fi
+    fi
+
+    press_enter
+}
+
+# ============================================================================
 # 重置功能
 # ============================================================================
 
@@ -2344,7 +2683,7 @@ do_reset() {
     fi
     
     # 3. 清理锁文件
-    rm -f "$LOCK_FILE" 2>/dev/null
+    rm -rf "${TMPDIR:-/tmp}/vback.lock" 2>/dev/null
     
     # 4. 重置内存中的变量
     CLOUD_PROVIDER=""
@@ -2496,8 +2835,17 @@ setup_wizard() {
         echo -ne "${C_RESET}"
         
         [[ -z "$dir_path" ]] && break
-        
-        dir_path=$(eval echo "$dir_path" 2>/dev/null || echo "$dir_path")
+
+        # 安全展开 ~ 和环境变量
+        dir_path="${dir_path//\~/$HOME}"
+        while [[ "$dir_path" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)\} ]]; do
+            local ename="${BASH_REMATCH[1]}"
+            dir_path="${dir_path//\$\{${ename}\}/${!ename}}"
+        done
+        while [[ "$dir_path" =~ \$([a-zA-Z_][a-zA-Z0-9_]*) ]]; do
+            local ename="${BASH_REMATCH[1]}"
+            dir_path="${dir_path//\$${ename}/${!ename}}"
+        done
         
         if [[ -d "$dir_path" ]]; then
             BACKUP_DIRS+=("$dir_path")
@@ -2571,7 +2919,7 @@ setup_wizard() {
                 fi
             }
             check_s3_tool && {
-                [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws
+                setup_s3_tool
                 s3_test
             }
         fi
@@ -2623,7 +2971,7 @@ show_header() {
 show_status_bar() {
     local cron_status=$([[ ${#SCHEDULE_IDS[@]} -gt 0 && -n "$(get_cron_status)" ]] && echo "on" || echo "off")
     local provider_name=$(get_provider_name "$CLOUD_PROVIDER")
-    local active_task_id="${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}"
+    local active_task_id="$(resolve_default_task_id)"
     local active_task_label="${L[not_set]}"
     [[ -n "$active_task_id" ]] && task_exists "$active_task_id" && active_task_label="$(task_display_name "$active_task_id")"
     
@@ -2701,7 +3049,7 @@ menu_backup() {
     echo ""
     
     local selected_task=""
-    selected_task=$(prompt_task_selection "${L[select_backup_task]}" "${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}") || { press_enter; return; }
+    selected_task=$(prompt_task_selection "${L[select_backup_task]}" "$(resolve_default_task_id)") || { press_enter; return; }
     load_task_context "$selected_task"
     
     if ! validate_config "$selected_task"; then
@@ -2747,7 +3095,7 @@ menu_list_backups() {
     echo ""
     
     local selected_task=""
-    selected_task=$(prompt_task_selection "${L[select_backup_task]}" "${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}") || { press_enter; return; }
+    selected_task=$(prompt_task_selection "${L[select_backup_task]}" "$(resolve_default_task_id)") || { press_enter; return; }
     load_task_context "$selected_task"
     
     if ! validate_config "$selected_task"; then
@@ -2756,7 +3104,7 @@ menu_list_backups() {
     fi
     
     check_s3_tool || { error "${L[err_no_s3_tool]}"; press_enter; return; }
-    [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws
+    setup_s3_tool
     
     echo -e "  ${C_BOLD}$(task_display_name "$selected_task")${C_RESET} ${C_MUTED}(${BACKUP_PREFIX:-${L[root_directory]}})${C_RESET}"
     echo ""
@@ -2793,7 +3141,7 @@ menu_test() {
     fi
     
     check_s3_tool || { error "${L[err_no_s3_tool]}"; press_enter; return; }
-    [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws
+    setup_s3_tool
     
     echo -e "  ${C_BOLD}${L[s3_settings]}${C_RESET}"
     show_kv "${L[cloud_provider]}" "$(get_provider_name "$CLOUD_PROVIDER")" "$C_INFO"
@@ -2976,7 +3324,7 @@ edit_schedule_form() {
     echo ""
     
     local selected_task=""
-    selected_task=$(prompt_task_selection "${L[schedule_task]}" "${task_id:-${DEFAULT_TASK_ID:-${ACTIVE_TASK_ID:-${TASK_IDS[0]}}}}") || return 1
+    selected_task=$(prompt_task_selection "${L[schedule_task]}" "${task_id:-$(resolve_default_task_id)}") || return 1
     task_id="$selected_task"
     
     echo ""
@@ -3105,7 +3453,7 @@ menu_cron() {
 
 menu_edit_config() {
     while true; do
-        local config_task_id="${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}"
+        local config_task_id="$(resolve_default_task_id)"
         local config_task_label="${L[not_set]}"
         [[ -n "$config_task_id" ]] && task_exists "$config_task_id" && config_task_label="$(task_display_name "$config_task_id")"
         
@@ -3206,7 +3554,16 @@ edit_backup_dirs() {
                 read -e -r new_dir
                 echo -ne "${C_RESET}"
                 if [[ -n "$new_dir" ]]; then
-                    new_dir=$(eval echo "$new_dir" 2>/dev/null || echo "$new_dir")
+                    # 安全展开 ~ 和环境变量
+                    new_dir="${new_dir//\~/$HOME}"
+                    while [[ "$new_dir" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)\} ]]; do
+                        local ename="${BASH_REMATCH[1]}"
+                        new_dir="${new_dir//\$\{${ename}\}/${!ename}}"
+                    done
+                    while [[ "$new_dir" =~ \$([a-zA-Z_][a-zA-Z0-9_]*) ]]; do
+                        local ename="${BASH_REMATCH[1]}"
+                        new_dir="${new_dir//\$${ename}/${!ename}}"
+                    done
                     BACKUP_DIRS+=("$new_dir")
                     if [[ -d "$new_dir" ]]; then
                         local sz=$(fmt_size $(get_dir_size "$new_dir"))
@@ -3400,6 +3757,7 @@ usage() {
     remove-cron     ${L[cli_cmd_cron_remove]}
     config          ${L[cli_cmd_config]}
     update          ${L[cli_cmd_update]}
+    restore         ${L[cli_cmd_restore]}
     reset           ${L[cli_cmd_reset]}
     help            ${L[cli_cmd_help]}
 
@@ -3515,6 +3873,7 @@ main() {
     
     setup_colors
     init_data_dir
+    init_temp_dir
     
     if [[ -n "$ARG_LANG" ]]; then
         set_language "$ARG_LANG"
@@ -3537,7 +3896,7 @@ main() {
         fi
     fi
     
-    [[ -z "$CLI_TASK_ID" ]] && CLI_TASK_ID="${ACTIVE_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}"
+    [[ -z "$CLI_TASK_ID" ]] && CLI_TASK_ID="$(resolve_default_task_id)"
     if [[ -n "$CLI_TASK_ID" ]] && ! task_exists "$CLI_TASK_ID"; then
         error "${L[invalid_option]}: ${CLI_TASK_ID}"
         exit 1
@@ -3584,12 +3943,12 @@ main() {
             ;;
         test)
             validate_config "$CLI_TASK_ID" || exit 1
-            [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws
+            setup_s3_tool
             s3_test
             ;;
         status)
             validate_config "$CLI_TASK_ID" || exit 1
-            [[ "$S3_TOOL" == "s3cmd" ]] && setup_s3cmd || setup_aws
+            setup_s3_tool
             echo -e "${C_BOLD}$(task_display_name "$CLI_TASK_ID")${C_RESET} ${C_MUTED}(${BACKUP_PREFIX:-${L[root_directory]}})${C_RESET}"
             echo ""
             for d in "${BACKUP_DIRS[@]}"; do
@@ -3614,6 +3973,15 @@ main() {
             ;;
         update)
             do_update
+            ;;
+        restore)
+            if needs_setup; then
+                error "${L[run_setup_first]}"
+                exit 1
+            fi
+            validate_config "$CLI_TASK_ID" || exit 1
+            setup_s3_tool
+            menu_restore
             ;;
         reset)
             do_reset
