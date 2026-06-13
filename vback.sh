@@ -1,7 +1,7 @@
 #!/bin/bash
 set -o pipefail
 # ============================================================================
-# vback - 优雅的服务器备份工具 v1.4.0
+# vback - 优雅的服务器备份工具 v1.4.1
 # Elegant Server Backup Tool
 # 
 # 更方便，更省心 | Effortless & Worry-free
@@ -14,7 +14,7 @@ set -o pipefail
 # 📜 License: MIT
 # ============================================================================
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || (
     # macOS fallback: resolve symlinks manually
@@ -133,6 +133,7 @@ load_lang_en() {
     L[select_option]="Select"
     L[invalid_option]="Invalid option"
     L[operation_cancelled]="Operation cancelled"
+    L[no_changes]="No changes to save"
     
     # Language selection
     L[select_language]="Select Language"
@@ -461,6 +462,7 @@ load_lang_zh() {
     L[select_option]="请选择"
     L[invalid_option]="无效选项"
     L[operation_cancelled]="操作已取消"
+    L[no_changes]="没有需要保存的更改"
     
     # Language selection
     L[select_language]="选择语言"
@@ -3202,10 +3204,24 @@ edit_task_menu() {
                 new_task_name="$(task_display_name "$task_id")"
                 input_field "${L[task_name]}" "$new_task_name" new_task_name false
                 task_set_scalar "$task_id" NAME "$new_task_name"
+                save_current_task_context "$task_id"
+                save_config
+                success "${L[task_saved]}"
+                press_enter
                 ;;
-            2) edit_backup_dirs ;;
-            3) edit_backup_options ;;
-            4) edit_exclude_patterns ;;
+            2)
+                edit_backup_dirs
+                # edit_backup_dirs 已经会保存上下文
+                ;;
+            3)
+                edit_backup_options
+                # edit_backup_options 已经会保存上下文
+                save_config
+                ;;
+            4)
+                edit_exclude_patterns
+                # edit_exclude_patterns 已经会保存上下文
+                ;;
             5)
                 DEFAULT_TASK_ID="$task_id"
                 ACTIVE_TASK_ID="$task_id"
@@ -3223,6 +3239,7 @@ edit_task_menu() {
                 ;;
             0|"")
                 save_current_task_context "$task_id"
+                save_config
                 ACTIVE_TASK_ID="$task_id"
                 return
                 ;;
@@ -3276,6 +3293,8 @@ menu_tasks() {
                 save_config
                 success "${L[task_saved]}"
                 press_enter
+                # 引导用户配置新任务
+                edit_task_menu "$new_task_id"
                 ;;
             d|D)
                 if [[ ${#TASK_IDS[@]} -le 1 ]]; then
@@ -3517,11 +3536,12 @@ edit_s3_config() {
 }
 
 edit_backup_dirs() {
+    local modified=false
     while true; do
         show_header
         echo -e "  ${C_TITLE}▸ ${L[backup_directories]}${C_RESET}"
         echo ""
-        
+
         if [[ ${#BACKUP_DIRS[@]} -eq 0 ]]; then
             echo -e "  ${C_MUTED}(${L[none]})${C_RESET}"
         else
@@ -3535,17 +3555,18 @@ edit_backup_dirs() {
                 fi
             done
         fi
-        
+
         echo ""
         print_line '─'
         menu_item "a" "${L[add_directory]}"
         menu_item "d" "${L[remove_directory]}"
+        menu_item "s" "${L[save]}"
         menu_item "0" "${L[back]}"
-        
+
         echo ""
-        echo -ne "  ${L[select_option]} ${C_MUTED}[0/a/d]${C_RESET}: "
+        echo -ne "  ${L[select_option]} ${C_MUTED}[0/a/d/s]${C_RESET}: "
         read -r choice
-        
+
         case $choice in
             a|A)
                 echo ""
@@ -3565,15 +3586,22 @@ edit_backup_dirs() {
                         new_dir="${new_dir//\$${ename}/${!ename}}"
                     done
                     BACKUP_DIRS+=("$new_dir")
+                    modified=true
                     if [[ -d "$new_dir" ]]; then
                         local sz=$(fmt_size $(get_dir_size "$new_dir"))
                         success "${L[dir_added]}: $new_dir ${C_MUTED}($sz)${C_RESET}"
                     else
                         warn "${L[dir_added]}: $new_dir ${C_WARNING}(${L[not_exist]})${C_RESET}"
                     fi
+                    press_enter
                 fi
                 ;;
             d|D)
+                if [[ ${#BACKUP_DIRS[@]} -eq 0 ]]; then
+                    warn "${L[none]}"
+                    press_enter
+                    continue
+                fi
                 echo ""
                 echo -ne "  ${C_PRIMARY}#${C_RESET}: "
                 read -r del_idx
@@ -3581,10 +3609,28 @@ edit_backup_dirs() {
                     local removed="${BACKUP_DIRS[$((del_idx-1))]}"
                     unset 'BACKUP_DIRS[$((del_idx-1))]'
                     BACKUP_DIRS=("${BACKUP_DIRS[@]}")
+                    modified=true
                     success "Removed: $removed"
+                    press_enter
                 fi
                 ;;
-            0|"") return ;;
+            s|S)
+                if [[ "$modified" == "true" ]]; then
+                    save_current_task_context "$CURRENT_TASK_ID"
+                    save_config
+                    modified=false
+                    success "${L[task_saved]}"
+                else
+                    info "${L[no_changes]}"
+                fi
+                press_enter
+                ;;
+            0|"")
+                if [[ "$modified" == "true" ]]; then
+                    save_current_task_context "$CURRENT_TASK_ID"
+                fi
+                return
+                ;;
         esac
     done
 }
@@ -3615,17 +3661,21 @@ edit_backup_options() {
     
     echo ""
     input_field "${L[max_backups]} (${L[max_backups_desc]})" "$MAX_BACKUPS" MAX_BACKUPS
-    
+
+    # 立即保存到任务上下文
+    save_current_task_context "$CURRENT_TASK_ID"
+
     success "${L[settings_updated]}"
     press_enter
 }
 
 edit_exclude_patterns() {
+    local modified=false
     while true; do
         show_header
         echo -e "  ${C_TITLE}▸ ${L[exclude_patterns]}${C_RESET}"
         echo ""
-        
+
         if [[ ${#EXCLUDE_PATTERNS[@]} -eq 0 ]]; then
             echo -e "  ${C_MUTED}(${L[none]})${C_RESET}"
         else
@@ -3633,40 +3683,72 @@ edit_exclude_patterns() {
                 echo -e "    ${C_MENU_NUM}$((i+1))${C_RESET}) ${C_MUTED}${EXCLUDE_PATTERNS[$i]}${C_RESET}"
             done
         fi
-        
+
         echo ""
         print_line '─'
         menu_item "a" "${L[add_pattern]}"
         menu_item "d" "${L[remove_pattern]}"
         menu_item "r" "${L[reset_default]}"
+        menu_item "s" "${L[save]}"
         menu_item "0" "${L[back]}"
-        
+
         echo ""
-        echo -ne "  ${L[select_option]} ${C_MUTED}[0/a/d/r]${C_RESET}: "
+        echo -ne "  ${L[select_option]} ${C_MUTED}[0/a/d/r/s]${C_RESET}: "
         read -r choice
-        
+
         case $choice in
             a|A)
                 echo ""
                 echo -ne "  ${C_PRIMARY}${L[pattern_example]}${C_RESET}: ${C_INPUT}"
                 read -r pattern
                 echo -ne "${C_RESET}"
-                [[ -n "$pattern" ]] && EXCLUDE_PATTERNS+=("$pattern")
+                if [[ -n "$pattern" ]]; then
+                    EXCLUDE_PATTERNS+=("$pattern")
+                    modified=true
+                    success "${L[success]}"
+                    press_enter
+                fi
                 ;;
             d|D)
+                if [[ ${#EXCLUDE_PATTERNS[@]} -eq 0 ]]; then
+                    warn "${L[none]}"
+                    press_enter
+                    continue
+                fi
                 echo ""
                 echo -ne "  ${C_PRIMARY}#${C_RESET}: "
                 read -r del_idx
                 if [[ "$del_idx" =~ ^[0-9]+$ ]] && [[ $del_idx -ge 1 ]] && [[ $del_idx -le ${#EXCLUDE_PATTERNS[@]} ]]; then
                     unset 'EXCLUDE_PATTERNS[$((del_idx-1))]'
                     EXCLUDE_PATTERNS=("${EXCLUDE_PATTERNS[@]}")
+                    modified=true
+                    success "${L[success]}"
+                    press_enter
                 fi
                 ;;
             r|R)
                 EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
+                modified=true
                 success "${L[success]}"
+                press_enter
                 ;;
-            0|"") return ;;
+            s|S)
+                if [[ "$modified" == "true" ]]; then
+                    save_current_task_context "$CURRENT_TASK_ID"
+                    save_config
+                    modified=false
+                    success "${L[task_saved]}"
+                else
+                    info "${L[no_changes]}"
+                fi
+                press_enter
+                ;;
+            0|"")
+                if [[ "$modified" == "true" ]]; then
+                    save_current_task_context "$CURRENT_TASK_ID"
+                fi
+                return
+                ;;
         esac
     done
 }
