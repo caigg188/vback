@@ -2443,56 +2443,79 @@ compare_versions() {
 do_update() {
     info "${L[checking_update]}"
     echo ""
-    
+
     local remote_version
     remote_version=$(get_remote_version)
-    
+
     if [[ -z "$remote_version" ]]; then
         error "${L[network_error]}"
         return 1
     fi
-    
+
     show_kv "${L[current_version]}" "$VERSION" "$C_INFO"
     show_kv "${L[latest_version]}" "$remote_version" "$C_SUCCESS"
     echo ""
-    
+
     local cmp=$(compare_versions "$VERSION" "$remote_version")
-    
+
     if [[ "$cmp" == "older" ]]; then
         success "${L[update_available]}"
         echo ""
-        
+
         if confirm "${L[confirm_update]}" "y"; then
             echo ""
             info "${L[updating]}"
-            
+
             # 备份旧脚本
             local backup_file="${SCRIPT_PATH}.backup.$(date +%Y%m%d_%H%M%S)"
-            cp "$SCRIPT_PATH" "$backup_file" 2>/dev/null
-            
-            # 下载新版本
-            local new_script
-            new_script=$(curl -fsSL --connect-timeout 30 "$RAW_SCRIPT_URL" 2>/dev/null)
-            
-            if [[ -z "$new_script" ]]; then
-                error "${L[download_failed]}"
+            if ! cp "$SCRIPT_PATH" "$backup_file" 2>/dev/null; then
+                error "${L[update_failed]}: 无法创建备份文件"
+                echo -e "  ${C_MUTED}备份路径: ${backup_file}${C_RESET}"
                 return 1
             fi
-            
+
+            # 下载新版本
+            local new_script curl_error
+            curl_error=$(mktemp)
+            new_script=$(curl -fsSL --connect-timeout 30 "$RAW_SCRIPT_URL" 2>"$curl_error")
+            local curl_exit=$?
+
+            if [[ $curl_exit -ne 0 ]] || [[ -z "$new_script" ]]; then
+                error "${L[download_failed]}"
+                if [[ -s "$curl_error" ]]; then
+                    echo -e "  ${C_MUTED}错误详情:${C_RESET}"
+                    head -3 "$curl_error" | sed 's/^/    /'
+                fi
+                echo -e "  ${C_MUTED}URL: ${RAW_SCRIPT_URL}${C_RESET}"
+                echo -e "  ${C_MUTED}退出码: ${curl_exit}${C_RESET}"
+                rm -f "$curl_error"
+                return 1
+            fi
+            rm -f "$curl_error"
+
             # 验证下载的脚本
             if ! echo "$new_script" | grep -q '^#!/bin/bash'; then
-                error "${L[download_failed]}"
+                error "${L[download_failed]}: 下载的文件不是有效的 Bash 脚本"
+                echo -e "  ${C_MUTED}文件开头:${C_RESET}"
+                echo "$new_script" | head -3 | sed 's/^/    /'
                 return 1
             fi
-            
+
             # 写入新脚本
-            echo "$new_script" > "$SCRIPT_PATH"
-            chmod +x "$SCRIPT_PATH"
-            
+            if ! echo "$new_script" > "$SCRIPT_PATH"; then
+                error "${L[update_failed]}: 无法写入新脚本"
+                echo -e "  ${C_MUTED}目标路径: ${SCRIPT_PATH}${C_RESET}"
+                return 1
+            fi
+
+            if ! chmod +x "$SCRIPT_PATH"; then
+                warn "无法设置执行权限，请手动执行: chmod +x $SCRIPT_PATH"
+            fi
+
             echo ""
             success "${L[update_success]}"
             info "${L[backup_old_script]} ${C_PATH}${backup_file}${C_RESET}"
-            
+
             log_info "Updated from $VERSION to $remote_version"
             return 0
         else
