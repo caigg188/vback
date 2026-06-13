@@ -2673,43 +2673,66 @@ do_reset() {
     print_box_line ""
     print_box_bottom
     echo ""
-    
+
     echo -e "  ${C_ERROR}${L[reset_warning]}${C_RESET}"
     echo ""
     echo -e "  ${C_MUTED}${L[reset_items]}:${C_RESET}"
-    echo -e "    ${C_ERROR}•${C_RESET} ${L[reset_config]}: ${C_PATH}${CONFIG_FILE}${C_RESET}"
-    echo -e "    ${C_ERROR}•${C_RESET} ${L[reset_logs]}: ${C_PATH}${LOG_DIR}/*${C_RESET}"
+    echo -e "    ${C_ERROR}•${C_RESET} ${L[reset_config]}: ${C_PATH}${DATA_DIR}/${C_RESET}"
+    echo -e "      ${C_MUTED}(包括: config, tasks, schedules, logs)${C_RESET}"
     echo -e "    ${C_ERROR}•${C_RESET} ${L[reset_cron]}"
     echo -e "    ${C_ERROR}•${C_RESET} ${L[reset_lang]}"
     echo ""
-    
+    echo -e "  ${C_WARNING}重置后脚本将恢复到初始状态（如同刚下载未配置）${C_RESET}"
+    echo ""
+
     echo -ne "  ${C_WARNING}${L[reset_confirm]}${C_RESET}: "
     read -r confirm_text
-    
+
     if [[ "$confirm_text" != "RESET" ]]; then
         echo ""
         warn "${L[reset_type_mismatch]}"
         return 1
     fi
-    
+
     echo ""
-    info "Resetting..."
-    
+    info "开始重置..."
+    echo ""
+
     # 1. 移除定时任务
     if crontab -l 2>/dev/null | grep -qF "$SCRIPT_PATH"; then
         remove_all_cron_jobs
-        info "Removed cron jobs"
+        success "✓ 已移除所有定时任务"
+    else
+        info "○ 无定时任务需要移除"
     fi
-    
-    # 2. 删除配置目录
+
+    # 2. 删除配置目录（完整清除）
     if [[ -d "$DATA_DIR" ]]; then
-        rm -rf "$DATA_DIR"
-        info "Removed ${DATA_DIR}"
+        local dir_size=$(du -sh "$DATA_DIR" 2>/dev/null | cut -f1)
+        if rm -rf "$DATA_DIR" 2>/dev/null; then
+            success "✓ 已删除配置目录 ${C_PATH}${DATA_DIR}${C_RESET} (${dir_size})"
+        else
+            error "✗ 无法删除配置目录: ${DATA_DIR}"
+            echo -e "  ${C_MUTED}请手动执行: rm -rf ${DATA_DIR}${C_RESET}"
+            return 1
+        fi
+    else
+        info "○ 配置目录不存在"
     fi
-    
-    # 3. 清理锁文件
-    rm -rf "${TMPDIR:-/tmp}/vback.lock" 2>/dev/null
-    
+
+    # 3. 清理临时文件
+    local cleaned=0
+    for lock_file in "${TMPDIR:-/tmp}/vback.lock" "${TMPDIR:-/tmp}/.s3cfg-vback-"* "${TMPDIR:-/tmp}/vback-"*; do
+        if [[ -e "$lock_file" ]]; then
+            rm -rf "$lock_file" 2>/dev/null && ((cleaned++))
+        fi
+    done
+    if [[ $cleaned -gt 0 ]]; then
+        success "✓ 已清理 ${cleaned} 个临时文件"
+    else
+        info "○ 无临时文件需要清理"
+    fi
+
     # 4. 重置内存中的变量
     CLOUD_PROVIDER=""
     S3_ACCESS_KEY=""
@@ -2729,10 +2752,11 @@ do_reset() {
     ACTIVE_TASK_ID=""
     DEFAULT_TASK_ID=""
     CURRENT_TASK_ID=""
-    
+
     echo ""
     success "${L[reset_success]}"
-    
+    info "下次运行时将进入初始配置向导"
+
     return 0
 }
 
