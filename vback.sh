@@ -362,7 +362,21 @@ load_lang_en() {
     L[reset_success]="Reset complete! vback is now in factory state."
     L[reset_cancelled]="Reset cancelled"
     L[reset_type_mismatch]="Input does not match, reset cancelled"
-    
+
+    # Smart config check
+    L[smart_check_title]="Smart Configuration Check"
+    L[check_s3_config]="S3 Credentials"
+    L[check_backup_dirs]="Backup Directories"
+    L[check_disk_space]="Disk Space"
+    L[check_tools]="Required Tools"
+    L[check_file_perms]="File Permissions"
+    L[check_cron]="Scheduled Tasks"
+    L[check_passed]="Check Passed"
+    L[check_errors]="errors found"
+    L[check_warnings]="warnings"
+    L[fix_suggestions]="Fix Suggestions"
+    L[warning]="Warning"
+
     # Lock/Process errors
     L[err_task_running]="Another backup task is running"
     L[err_lock_pid]="Process ID"
@@ -691,7 +705,21 @@ load_lang_zh() {
     L[reset_success]="重置完成！vback 已恢复出厂状态。"
     L[reset_cancelled]="重置已取消"
     L[reset_type_mismatch]="输入不匹配，重置已取消"
-    
+
+    # Smart config check
+    L[smart_check_title]="智能配置检查"
+    L[check_s3_config]="S3 凭证"
+    L[check_backup_dirs]="备份目录"
+    L[check_disk_space]="磁盘空间"
+    L[check_tools]="必需工具"
+    L[check_file_perms]="文件权限"
+    L[check_cron]="定时任务"
+    L[check_passed]="检查通过"
+    L[check_errors]="个错误"
+    L[check_warnings]="个警告"
+    L[fix_suggestions]="修复建议"
+    L[warning]="警告"
+
     # Lock/Process errors
     L[err_task_running]="已有备份任务正在运行"
     L[err_lock_pid]="进程 ID"
@@ -1982,6 +2010,223 @@ validate_config() {
 }
 
 # ============================================================================
+# 智能配置检查系统
+# ============================================================================
+
+check_disk_space() {
+    local path="$1" required_mb="${2:-100}"
+    local available_mb=0
+
+    if command -v df &>/dev/null; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            available_mb=$(df -m "$path" 2>/dev/null | awk 'NR==2 {print $4}')
+        else
+            available_mb=$(df -m "$path" 2>/dev/null | awk 'NR==2 {print $4}')
+        fi
+    fi
+
+    [[ -n "$available_mb" && $available_mb -gt $required_mb ]]
+}
+
+check_path_permissions() {
+    local path="$1"
+    [[ -r "$path" && -x "$path" ]]
+}
+
+estimate_backup_size() {
+    local total_kb=0
+    for d in "${BACKUP_DIRS[@]}"; do
+        if [[ -d "$d" ]]; then
+            local size_kb=$(du -sk "$d" 2>/dev/null | cut -f1)
+            ((total_kb += size_kb))
+        fi
+    done
+    echo $((total_kb / 1024))
+}
+
+smart_check_config() {
+    local task_id="${1:-${CURRENT_TASK_ID:-${DEFAULT_TASK_ID:-${TASK_IDS[0]}}}}"
+    local warnings=() errors=() tips=()
+    local check_count=0 pass_count=0
+
+    echo ""
+    echo -e "  ${C_BOLD}${L[smart_check_title]}${C_RESET}"
+    echo ""
+
+    # 1. 检查 S3 配置
+    ((check_count++))
+    if [[ -n "$S3_ACCESS_KEY" && -n "$S3_SECRET_KEY" && -n "$S3_BUCKET" ]]; then
+        echo -e "  ${C_SUCCESS}✓${C_RESET} S3 凭证配置完整"
+        ((pass_count++))
+
+        # 检查密钥长度（基本验证）
+        if [[ ${#S3_ACCESS_KEY} -lt 16 ]]; then
+            warnings+=("Access Key 长度异常（< 16 字符），请确认是否正确")
+        fi
+    else
+        errors+=("S3 凭证未配置完整")
+        echo -e "  ${C_ERROR}✗${C_RESET} S3 凭证配置不完整"
+        tips+=("运行 ${C_PATH}./vback.sh setup${C_RESET} 配置 S3 存储")
+    fi
+
+    # 2. 检查备份目录
+    ((check_count++))
+    if [[ ${#BACKUP_DIRS[@]} -gt 0 ]]; then
+        local valid_dirs=0 invalid_dirs=0
+        for d in "${BACKUP_DIRS[@]}"; do
+            if [[ -d "$d" ]]; then
+                ((valid_dirs++))
+                if ! check_path_permissions "$d"; then
+                    warnings+=("目录 ${d} 权限不足，可能无法读取")
+                fi
+            else
+                ((invalid_dirs++))
+                errors+=("备份目录不存在: ${d}")
+            fi
+        done
+
+        if [[ $invalid_dirs -eq 0 ]]; then
+            echo -e "  ${C_SUCCESS}✓${C_RESET} 备份目录: ${valid_dirs} 个有效"
+            ((pass_count++))
+        else
+            echo -e "  ${C_WARNING}⚠${C_RESET} 备份目录: ${valid_dirs} 个有效, ${invalid_dirs} 个无效"
+            tips+=("编辑任务删除无效目录或创建缺失的目录")
+        fi
+    else
+        errors+=("未配置备份目录")
+        echo -e "  ${C_ERROR}✗${C_RESET} 未配置备份目录"
+        tips+=("添加至少一个备份目录")
+    fi
+
+    # 3. 检查磁盘空间
+    ((check_count++))
+    local tmp_dir="${TMPDIR:-/tmp}"
+    if check_disk_space "$tmp_dir" 500; then
+        local available_mb=$(df -m "$tmp_dir" 2>/dev/null | awk 'NR==2 {print $4}')
+        echo -e "  ${C_SUCCESS}✓${C_RESET} 磁盘空间: ${available_mb} MB 可用"
+        ((pass_count++))
+
+        # 估算备份大小
+        if [[ ${#BACKUP_DIRS[@]} -gt 0 ]]; then
+            local estimated_mb=$(estimate_backup_size)
+            if [[ $estimated_mb -gt 0 ]]; then
+                local compressed_mb=$((estimated_mb / 3))
+                if [[ $compressed_mb -gt $available_mb ]]; then
+                    warnings+=("预计压缩后需要 ${compressed_mb}MB，可用空间可能不足")
+                fi
+            fi
+        fi
+    else
+        local available_mb=$(df -m "$tmp_dir" 2>/dev/null | awk 'NR==2 {print $4}')
+        warnings+=("磁盘空间不足 (可用: ${available_mb}MB)，建议至少 500MB")
+        echo -e "  ${C_WARNING}⚠${C_RESET} 磁盘空间: ${available_mb} MB 可用（建议 >500MB）"
+    fi
+
+    # 4. 检查必需工具
+    ((check_count++))
+    local missing_tools=()
+    local critical_tools=("tar" "gzip")
+    local optional_tools=("s3cmd" "aws")
+
+    for tool in "${critical_tools[@]}"; do
+        if ! command -v "$tool" &>/dev/null; then
+            missing_tools+=("$tool")
+            errors+=("缺少必需工具: $tool")
+        fi
+    done
+
+    local has_s3_tool=false
+    for tool in "${optional_tools[@]}"; do
+        if command -v "$tool" &>/dev/null; then
+            has_s3_tool=true
+            break
+        fi
+    done
+
+    if [[ ${#missing_tools[@]} -eq 0 && "$has_s3_tool" == "true" ]]; then
+        echo -e "  ${C_SUCCESS}✓${C_RESET} 必需工具已安装"
+        ((pass_count++))
+    else
+        echo -e "  ${C_ERROR}✗${C_RESET} 缺少必需工具: ${missing_tools[*]}"
+        if [[ "$has_s3_tool" == "false" ]]; then
+            errors+=("缺少 S3 工具 (s3cmd 或 aws-cli)")
+            tips+=("安装 s3cmd: ${C_PATH}apt-get install s3cmd${C_RESET} 或 ${C_PATH}brew install s3cmd${C_RESET}")
+        fi
+    fi
+
+    # 5. 检查配置文件权限
+    ((check_count++))
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local perms=$(stat -c "%a" "$CONFIG_FILE" 2>/dev/null || stat -f "%OLp" "$CONFIG_FILE" 2>/dev/null)
+        if [[ "$perms" == "600" ]]; then
+            echo -e "  ${C_SUCCESS}✓${C_RESET} 配置文件权限正确 (600)"
+            ((pass_count++))
+        else
+            warnings+=("配置文件权限 ${perms}，建议设置为 600")
+            echo -e "  ${C_WARNING}⚠${C_RESET} 配置文件权限 ${perms}（建议 600）"
+            tips+=("修复权限: ${C_PATH}chmod 600 ${CONFIG_FILE}${C_RESET}")
+        fi
+    fi
+
+    # 6. 检查定时任务
+    ((check_count++))
+    if crontab -l 2>/dev/null | grep -qF "$SCRIPT_PATH"; then
+        local cron_count=$(crontab -l 2>/dev/null | grep -cF "$SCRIPT_PATH")
+        echo -e "  ${C_SUCCESS}✓${C_RESET} 定时任务: ${cron_count} 个已配置"
+        ((pass_count++))
+    else
+        echo -e "  ${C_INFO}○${C_RESET} 未配置定时任务（可选）"
+        tips+=("配置定时任务实现自动备份")
+    fi
+
+    # 显示检查结果摘要
+    echo ""
+    print_line '─'
+
+    local pass_rate=$((pass_count * 100 / check_count))
+    if [[ ${#errors[@]} -eq 0 ]]; then
+        echo -e "  ${C_SUCCESS}✓ 检查通过${C_RESET} (${pass_count}/${check_count}, ${pass_rate}%)"
+    else
+        echo -e "  ${C_ERROR}✗ 发现 ${#errors[@]} 个错误${C_RESET}"
+    fi
+
+    if [[ ${#warnings[@]} -gt 0 ]]; then
+        echo -e "  ${C_WARNING}⚠ ${#warnings[@]} 个警告${C_RESET}"
+    fi
+
+    # 显示错误详情
+    if [[ ${#errors[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "  ${C_ERROR}${L[err_config_errors]}:${C_RESET}"
+        for err in "${errors[@]}"; do
+            echo -e "    ${C_ERROR}•${C_RESET} $err"
+        done
+    fi
+
+    # 显示警告详情
+    if [[ ${#warnings[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "  ${C_WARNING}警告:${C_RESET}"
+        for warn in "${warnings[@]}"; do
+            echo -e "    ${C_WARNING}•${C_RESET} $warn"
+        done
+    fi
+
+    # 显示修复建议
+    if [[ ${#tips[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "  ${C_INFO}💡 修复建议:${C_RESET}"
+        for tip in "${tips[@]}"; do
+            echo -e "    ${C_INFO}→${C_RESET} $tip"
+        done
+    fi
+
+    echo ""
+
+    [[ ${#errors[@]} -eq 0 ]]
+}
+
+# ============================================================================
 # SQLite 安全备份
 # ============================================================================
 
@@ -3183,33 +3428,28 @@ menu_test() {
     show_header
     echo -e "  ${C_TITLE}▸ ${L[connection_test]}${C_RESET}"
     echo ""
-    
+
+    # 智能配置检查（先于连接测试）
+    smart_check_config
+
     if ! validate_config; then
         press_enter
         return
     fi
-    
+
     check_s3_tool || { error "${L[err_no_s3_tool]}"; press_enter; return; }
     setup_s3_tool
-    
+
+    print_line '─'
+    echo ""
     echo -e "  ${C_BOLD}${L[s3_settings]}${C_RESET}"
     show_kv "${L[cloud_provider]}" "$(get_provider_name "$CLOUD_PROVIDER")" "$C_INFO"
     show_kv "${L[endpoint]}" "$S3_ENDPOINT"
     show_kv "${L[bucket]}" "$S3_BUCKET" "$C_INFO"
     echo ""
-    
+
     s3_test
-    
-    echo ""
-    echo -e "  ${C_BOLD}${L[dependency_check]}${C_RESET}"
-    for cmd in sqlite3 rsync gzip tar s3cmd aws; do
-        if command -v $cmd &>/dev/null; then
-            echo -e "    $(status_badge ok "$cmd")"
-        else
-            echo -e "    $(status_badge off "$cmd ${C_MUTED}(${L[not_installed]})${C_RESET}")"
-        fi
-    done
-    
+
     press_enter
 }
 
