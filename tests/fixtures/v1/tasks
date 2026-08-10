@@ -1,0 +1,18 @@
+# Safe v1 task fixture
+TASK_IDS=(
+    task_alpha
+)
+ACTIVE_TASK_ID=task_alpha
+DEFAULT_TASK_ID=task_alpha
+TASK_NAME_task_alpha=Daily\ Site
+TASK_PREFIX_task_alpha=legacy
+TASK_MAX_BACKUPS_task_alpha=7
+TASK_COMPRESS_task_alpha=true
+TASK_COMPRESSION_LEVEL_task_alpha=6
+TASK_SQLITE_SAFE_task_alpha=true
+TASK_DIRS_task_alpha=(
+    /srv/My\ App
+)
+TASK_EXCLUDES_task_alpha=(
+    \*.log
+)

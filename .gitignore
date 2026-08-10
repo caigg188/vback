@@ -1,0 +1,42 @@
+# Local runtime data
+.vback/
+data/
+dist/
+coverage/
+
+# Frontend/build dependencies
+node_modules/
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+*.tsbuildinfo
+
+# Local tools and generated binaries
+.tools/
+/vback
+*.test
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Generated web assets are embedded by Go and intentionally versioned.
+!internal/webui/dist/
+!internal/webui/dist/**
+
+# Historical local planning notes (not distribution artifacts)
+CLAUDE.md
+PHASE1_IMPLEMENTATION.sh
+REFACTOR_COMPLETE.md
+RELEASE_GUIDE.md
+UX_OPTIMIZATION_PLAN.md

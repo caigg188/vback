@@ -1,0 +1,21 @@
+# Safe v1 parser fixture
+CLOUD_PROVIDER=custom
+S3_ACCESS_KEY=AKIA_TEST
+S3_SECRET_KEY=fixture_secret
+S3_ENDPOINT=https://s3.example.test
+S3_BUCKET=backup-fixture
+S3_REGION=us-east-1
+BACKUP_DIRS=(
+    /srv/My\ App
+)
+BACKUP_PREFIX=legacy
+MAX_BACKUPS=7
+COMPRESS_BACKUP=true
+COMPRESSION_LEVEL=6
+SQLITE_SAFE_BACKUP=true
+SCHEDULE_CRON=0\ 3\ \*\ \*\ \*
+EXCLUDE_PATTERNS=(
+    \*.log
+)
+ACTIVE_TASK_ID=task_alpha
+DEFAULT_TASK_ID=task_alpha

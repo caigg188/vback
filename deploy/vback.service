@@ -1,0 +1,23 @@
+[Unit]
+Description=vback lightweight backup console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vback
+Group=vback
+Environment=VBACK_DATA_DIR=/var/lib/vback
+Environment=VBACK_LISTEN=127.0.0.1:9898
+ExecStart=/usr/local/bin/vback serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/vback
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

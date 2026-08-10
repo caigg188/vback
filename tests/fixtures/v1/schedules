@@ -1,0 +1,7 @@
+# Safe v1 schedule fixture
+SCHEDULE_IDS=(
+    schedule_alpha
+)
+SCHEDULE_NAME_schedule_alpha=Nightly
+SCHEDULE_TASK_schedule_alpha=task_alpha
+SCHEDULE_CRON_schedule_alpha=0\ 3\ \*\ \*\ \*

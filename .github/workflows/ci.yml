@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run test:e2e
+        working-directory: web
+      - run: go test -race ./...
+      - run: sudo apt-get update && sudo apt-get install -y restic shellcheck
+      - run: shellcheck --severity=error vback.sh tests/*.sh
+      - run: bash tests/test_v1.sh
+      - name: Start MinIO
+        run: |
+          docker run -d --name vback-minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=vbacktest \
+            -e MINIO_ROOT_PASSWORD=vbacktestsecret \
+            minio/minio server /data
+          for i in {1..60}; do curl -fsS http://127.0.0.1:9000/minio/health/live && break; sleep 1; done
+          docker run --rm --network host minio/mc sh -c \
+            'mc alias set local http://127.0.0.1:9000 vbacktest vbacktestsecret && mc mb --ignore-existing local/vback-e2e'
+      - run: bash tests/e2e_minio.sh
+      - run: mkdir -p dist && CGO_ENABLED=0 go build -trimpath -o dist/vback ./cmd/vback

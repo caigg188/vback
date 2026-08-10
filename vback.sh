@@ -1,7 +1,7 @@
 #!/bin/bash
 set -o pipefail
 # ============================================================================
-# vback - 优雅的服务器备份工具 v1.4.1
+# vback - 优雅的服务器备份工具 v1.4.2
 # Elegant Server Backup Tool
 # 
 # 更方便，更省心 | Effortless & Worry-free
@@ -14,7 +14,15 @@ set -o pipefail
 # 📜 License: MIT
 # ============================================================================
 
-VERSION="1.4.1"
+VERSION="1.4.2"
+
+# vback relies on associative arrays and lowercase expansion. macOS ships
+# Bash 3.2 at /bin/bash, so fail before any state is read or written.
+if ((BASH_VERSINFO[0] < 4)); then
+    printf '%s\n' "vback requires Bash 4.0 or newer." >&2
+    printf '%s\n' "macOS: install a modern Bash (brew install bash), then run: /opt/homebrew/bin/bash $0" >&2
+    exit 2
+fi
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || (
     # macOS fallback: resolve symlinks manually
@@ -102,7 +110,7 @@ load_lang_en() {
     # Branding
     L[slogan]="Effortless & Worry-free"
     L[tagline]="A ready-to-use server backup script"
-    
+
     # General
     L[app_name]="vback"
     L[app_desc]="Elegant Server Backup Tool"
@@ -878,7 +886,10 @@ get_provider_name() {
 
 get_default_endpoint() {
     local provider="$1"
-    echo "${PROVIDERS[${provider}_endpoint]:-}"
+    local endpoint="${PROVIDERS[${provider}_endpoint]:-}"
+    local region="${PROVIDERS[${provider}_region]:-}"
+    endpoint="${endpoint//\{region\}/$region}"
+    echo "$endpoint"
 }
 
 get_default_region() {
@@ -1223,26 +1234,121 @@ save_current_task_context() {
     task_set_array "$task_id" EXCLUDES "${EXCLUDE_PATTERNS[@]}"
 }
 
-# 验证数据文件安全性：确保只包含合法的 shell 赋值语句
+# 旧版数据文件只按允许列表解析，绝不作为 Shell 代码执行。
 validate_data_file() {
     local file="$1"
     [[ ! -f "$file" ]] && return 1
-    # 检查文件是否包含可疑内容（命令替换、管道、重定向等）
-    local suspicious
-    suspicious=$(grep -n '`\|^\s*exec\s\|^\s*source\s\|^\s*\.\s\||\s*>\s*\$(' "$file" 2>/dev/null | grep -v '^#' | head -1)
-    if [[ -n "$suspicious" ]]; then
-        log_error "Security: suspicious content in $file: $suspicious"
+
+    local owner current_uid perms
+    current_uid="$(id -u)"
+    owner="$(stat -c %u "$file" 2>/dev/null || stat -f %u "$file" 2>/dev/null)"
+    perms="$(stat -c %a "$file" 2>/dev/null || stat -f %OLp "$file" 2>/dev/null)"
+    if [[ "$owner" != "$current_uid" || "$perms" != "600" ]]; then
+        log_error "Security: unsafe owner or permissions on $file"
         return 1
     fi
+
     return 0
 }
 
+data_key_allowed() {
+    local key="$1"
+    [[ "$key" =~ ^(CLOUD_PROVIDER|S3_ACCESS_KEY|S3_SECRET_KEY|S3_ENDPOINT|S3_BUCKET|S3_REGION|BACKUP_DIRS|BACKUP_PREFIX|MAX_BACKUPS|COMPRESS_BACKUP|COMPRESSION_LEVEL|SQLITE_SAFE_BACKUP|SCHEDULE_CRON|EXCLUDE_PATTERNS|ACTIVE_TASK_ID|DEFAULT_TASK_ID|TASK_IDS|SCHEDULE_IDS)$ ]] ||
+        [[ "$key" =~ ^TASK_(NAME|PREFIX|MAX_BACKUPS|COMPRESS|COMPRESSION_LEVEL|SQLITE_SAFE|DIRS|EXCLUDES)_[A-Za-z0-9_]+$ ]] ||
+        [[ "$key" =~ ^SCHEDULE_(NAME|TASK|CRON)_[A-Za-z0-9_]+$ ]]
+}
+
+trim_data_word() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+decode_data_word() {
+    local raw="$1" output_name="$2" decoded="" index char escaped=false
+    raw="$(trim_data_word "$raw")"
+    if [[ "$raw" == *'$('* || "$raw" == *'${'* || "$raw" == *'`'* || "$raw" == *';'* || "$raw" == *'&&'* || "$raw" == *'||'* || "$raw" == *'<'* || "$raw" == *'>'* ]]; then
+        return 1
+    fi
+    if [[ "$raw" == "\$'"*"'" ]]; then
+        raw="${raw:2:${#raw}-3}"
+        [[ "$raw" == *'\c'* ]] && return 1
+        printf -v "$output_name" '%b' "$raw"
+        return 0
+    fi
+    if [[ ( "$raw" == "'"*"'" || "$raw" == '"'*'"' ) && ${#raw} -ge 2 ]]; then
+        raw="${raw:1:${#raw}-2}"
+    fi
+    for ((index=0; index<${#raw}; index++)); do
+        char="${raw:index:1}"
+        if [[ "$escaped" == true ]]; then
+            decoded+="$char"
+            escaped=false
+        elif [[ "$char" == '\' ]]; then
+            escaped=true
+        else
+            decoded+="$char"
+        fi
+    done
+    [[ "$escaped" == true ]] && decoded+='\'
+    printf -v "$output_name" '%s' "$decoded"
+}
+
+load_data_file() {
+    local file="$1" line key raw value array_name="" array_index=0
+    validate_data_file "$file" || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="$(trim_data_word "$line")"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        if [[ -n "$array_name" ]]; then
+            if [[ "$line" == ")" ]]; then
+                array_name=""
+                continue
+            fi
+            if ! decode_data_word "$line" value; then
+                log_error "Security: invalid value in $file"
+                return 1
+            fi
+            printf -v "${array_name}[${array_index}]" '%s' "$value"
+            ((array_index++))
+            continue
+        fi
+        if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            log_error "Security: unsupported statement in $file"
+            return 1
+        fi
+        key="${BASH_REMATCH[1]}"
+        raw="$(trim_data_word "${BASH_REMATCH[2]}")"
+        if ! data_key_allowed "$key"; then
+            log_error "Security: unsupported key $key in $file"
+            return 1
+        fi
+        if [[ "$raw" == "(" ]]; then
+            unset "$key"
+            declare -g -a "$key"
+            array_name="$key"
+            array_index=0
+            continue
+        fi
+        if ! decode_data_word "$raw" value; then
+            log_error "Security: invalid value for $key in $file"
+            return 1
+        fi
+        printf -v "$key" '%s' "$value"
+    done < "$file"
+    if [[ -n "$array_name" ]]; then
+        log_error "Security: unterminated array in $file"
+        return 1
+    fi
+}
+
 load_tasks_store() {
-    [[ -f "$TASKS_FILE" ]] && validate_data_file "$TASKS_FILE" && source "$TASKS_FILE"
+    [[ -f "$TASKS_FILE" ]] && load_data_file "$TASKS_FILE"
 }
 
 load_schedules_store() {
-    [[ -f "$SCHEDULES_FILE" ]] && validate_data_file "$SCHEDULES_FILE" && source "$SCHEDULES_FILE"
+    [[ -f "$SCHEDULES_FILE" ]] && load_data_file "$SCHEDULES_FILE"
 }
 
 save_tasks_store() {
@@ -1354,7 +1460,7 @@ ensure_task_store() {
 }
 
 load_config() {
-    [[ -f "$CONFIG_FILE" ]] && validate_data_file "$CONFIG_FILE" && source "$CONFIG_FILE"
+    [[ -f "$CONFIG_FILE" ]] && load_data_file "$CONFIG_FILE"
     load_tasks_store
     load_schedules_store
     migrate_legacy_config
@@ -1479,43 +1585,93 @@ log_debug() { log "DEBUG" "$1"; }
 # ============================================================================
 
 BOX_WIDTH=58
+ASCII_UI=false
+
+setup_ui_layout() {
+    local cols=80
+    [[ -t 1 ]] && cols="$(tput cols 2>/dev/null || echo 80)"
+    ((cols < 44)) && BOX_WIDTH=40
+    ((cols >= 44 && cols < 76)) && BOX_WIDTH=$((cols - 4))
+    ((cols >= 76)) && BOX_WIDTH=72
+    [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" != *UTF-8* && "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" != *utf8* ]] && ASCII_UI=true
+}
+
+repeat_char() {
+    local char="$1" count="$2" i
+    for ((i=0; i<count; i++)); do
+        printf '%s' "$char"
+    done
+}
+
+display_width() {
+    local text="$1" width=0 i ch code
+    for ((i=0; i<${#text}; i++)); do
+        ch="${text:i:1}"
+        printf -v code '%d' "'$ch"
+        if (( (code >= 0x1100 && code <= 0x115f) ||
+              (code >= 0x2e80 && code <= 0xa4cf) ||
+              (code >= 0xac00 && code <= 0xd7a3) ||
+              (code >= 0xf900 && code <= 0xfaff) ||
+              (code >= 0xfe10 && code <= 0xfe6f) ||
+              (code >= 0xff00 && code <= 0xff60) ||
+              (code >= 0x1f300 && code <= 0x1faff) )); then
+            ((width+=2))
+        else
+            ((width++))
+        fi
+    done
+    echo "$width"
+}
 
 print_line() {
     local char="${1:-─}"
+    [[ "$ASCII_UI" == "true" ]] && char="-"
     printf "  ${C_BORDER}"
-    printf '%*s' "$((BOX_WIDTH-4))" '' | tr ' ' "$char"
+    repeat_char "$char" "$((BOX_WIDTH-4))"
     printf "${C_RESET}\n"
 }
 
 print_box_top() {
-    printf "  ${C_BORDER}╭"
-    printf '%*s' "$((BOX_WIDTH-4))" '' | tr ' ' '─'
-    printf "╮${C_RESET}\n"
+    local left="╭" right="╮" edge="─"
+    [[ "$ASCII_UI" == "true" ]] && left="+" right="+" edge="-"
+    printf "  ${C_BORDER}%s" "$left"
+    repeat_char "$edge" "$((BOX_WIDTH-4))"
+    printf "%s${C_RESET}\n" "$right"
 }
 
 print_box_bottom() {
-    printf "  ${C_BORDER}╰"
-    printf '%*s' "$((BOX_WIDTH-4))" '' | tr ' ' '─'
-    printf "╯${C_RESET}\n"
+    local left="╰" right="╯" edge="─"
+    [[ "$ASCII_UI" == "true" ]] && left="+" right="+" edge="-"
+    printf "  ${C_BORDER}%s" "$left"
+    repeat_char "$edge" "$((BOX_WIDTH-4))"
+    printf "%s${C_RESET}\n" "$right"
 }
 
 print_box_line() {
     local content="$1" align="${2:-left}"
     local stripped=$(echo -e "$content" | sed 's/\x1b\[[0-9;]*m//g')
     local inner_width=$((BOX_WIDTH-6))
-    local padding=$((inner_width - ${#stripped}))
+    local content_width
+    content_width="$(display_width "$stripped")"
+    local padding=$((inner_width - content_width))
     [[ $padding -lt 0 ]] && padding=0
     
     case "$align" in
         center)
             local lp=$((padding/2)) rp=$((padding-lp))
-            printf "  ${C_BORDER}│${C_RESET} %*s%b%*s ${C_BORDER}│${C_RESET}\n" "$lp" "" "$content" "$rp" ""
+            local side="│"
+            [[ "$ASCII_UI" == "true" ]] && side="|"
+            printf "  ${C_BORDER}%s${C_RESET} %*s%b%*s ${C_BORDER}%s${C_RESET}\n" "$side" "$lp" "" "$content" "$rp" "" "$side"
             ;;
         right)
-            printf "  ${C_BORDER}│${C_RESET} %*s%b ${C_BORDER}│${C_RESET}\n" "$padding" "" "$content"
+            local side="│"
+            [[ "$ASCII_UI" == "true" ]] && side="|"
+            printf "  ${C_BORDER}%s${C_RESET} %*s%b ${C_BORDER}%s${C_RESET}\n" "$side" "$padding" "" "$content" "$side"
             ;;
         *)
-            printf "  ${C_BORDER}│${C_RESET} %b%*s ${C_BORDER}│${C_RESET}\n" "$content" "$padding" ""
+            local side="│"
+            [[ "$ASCII_UI" == "true" ]] && side="|"
+            printf "  ${C_BORDER}%s${C_RESET} %b%*s ${C_BORDER}%s${C_RESET}\n" "$side" "$content" "$padding" "" "$side"
             ;;
     esac
 }
@@ -1927,7 +2083,34 @@ s3_verify_upload() {
         return 0
     fi
 
-    if [[ "$local_md5" == "$remote_md5" ]]; then
+    # Multipart S3 uploads use a composite ETag (hash-partcount), not a plain
+    # MD5. With AWS CLI, compare a downloaded first-MiB sample instead.
+    if [[ "$remote_md5" == *-* ]]; then
+        if [[ "$S3_TOOL" != "aws" ]]; then
+            log_info "Upload completed; multipart ETag cannot be compared as MD5 ($remote_md5)"
+            return 0
+        fi
+        local remote_sample="${TEMP_DIR}/remote-sample-$$" local_sample="${TEMP_DIR}/local-sample-$$"
+        if ! aws s3api get-object --bucket "$S3_BUCKET" --key "$dst" --range bytes=0-1048575 $AWS_ENDPOINT "$remote_sample" >/dev/null 2>&1; then
+            log_warn "Upload completed; multipart sample download was unavailable"
+            return 0
+        fi
+        dd if="$src" of="$local_sample" bs=1048576 count=1 2>/dev/null || return 1
+        local local_sample_md5 remote_sample_md5
+        if command -v md5sum &>/dev/null; then
+            local_sample_md5=$(md5sum "$local_sample" | awk '{print $1}')
+            remote_sample_md5=$(md5sum "$remote_sample" | awk '{print $1}')
+        else
+            local_sample_md5=$(md5 -q "$local_sample")
+            remote_sample_md5=$(md5 -q "$remote_sample")
+        fi
+        if [[ "$local_sample_md5" != "$remote_sample_md5" ]]; then
+            log_error "Upload verification failed: multipart download sample mismatch"
+            return 1
+        fi
+        log_info "Upload verified with multipart download sample"
+        return 0
+    elif [[ "$local_md5" == "$remote_md5" ]]; then
         log_info "Upload verified: MD5 match ($local_md5)"
         return 0
     else
@@ -1961,22 +2144,19 @@ s3_test() {
     echo "vback-test-$(date +%s)" > "$test_file"
     
     local start=$(date +%s)
-    local result
-    if [[ "$S3_TOOL" == "s3cmd" ]]; then
-        result=$(s3cmd -c "$S3CMD_CFG" put "$test_file" "s3://${S3_BUCKET}/.vback-test" 2>&1)
-    else
-        result=$(aws s3 cp "$test_file" "s3://${S3_BUCKET}/.vback-test" $AWS_ENDPOINT 2>&1)
-    fi
+    local result rc test_key=".vback-test-$$"
+    result=$(s3_put "$test_file" "$test_key" false)
+    rc=$?
     local duration=$(($(date +%s) - start))
     rm -f "$test_file"
     
-    if echo "$result" | grep -qi "error\|fail\|denied\|invalid"; then
+    if [[ $rc -ne 0 ]]; then
         error "${L[connection_failed]}"
         echo "$result" | head -3 | sed 's/^/    /'
         return 1
     fi
     
-    s3_rm ".vback-test" &>/dev/null
+    s3_rm "$test_key" &>/dev/null
     success "${L[connection_success]} (${duration}s)"
     return 0
 }
@@ -1995,8 +2175,16 @@ validate_config() {
     [[ -z "$S3_BUCKET" ]] && errors+=("${L[bucket]} ${L[not_set]}")
     [[ ${#BACKUP_DIRS[@]} -eq 0 ]] && errors+=("${L[backup_directories]} ${L[not_set]}")
     
+    local -A seen_names=()
     for d in "${BACKUP_DIRS[@]}"; do
         [[ ! -d "$d" ]] && errors+=("$d ${L[not_exist]}")
+        local base_name
+        base_name="$(basename "$d")"
+        if [[ -n "${seen_names[$base_name]:-}" ]]; then
+            errors+=("Duplicate source name '$base_name': ${seen_names[$base_name]} and $d")
+        else
+            seen_names[$base_name]="$d"
+        fi
     done
     
     if [[ ${#errors[@]} -gt 0 ]]; then
@@ -2256,10 +2444,17 @@ prepare_safe_copy() {
     fi
     
     if command -v rsync &>/dev/null; then
-        rsync -a "${exclude_args[@]}" "$src_dir/" "$dest_dir/" 2>/dev/null
+        rsync -a "${exclude_args[@]}" "$src_dir/" "$dest_dir/" 2>/dev/null || return 1
     else
-        # cp -a 在 macOS 上可能不可用，使用 cp -pR 作为 fallback
-        cp -a "$src_dir/." "$dest_dir/" 2>/dev/null || cp -pR "$src_dir/." "$dest_dir/" 2>/dev/null
+        local -a tar_excludes=()
+        local pattern
+        for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+            tar_excludes+=("--exclude=$pattern")
+        done
+        if [[ "$SQLITE_SAFE_BACKUP" == "true" ]]; then
+            tar_excludes+=(--exclude='*.db' --exclude='*.sqlite' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal')
+        fi
+        tar -cf - "${tar_excludes[@]}" -C "$src_dir" . 2>/dev/null | tar -xf - -C "$dest_dir" 2>/dev/null || return 1
         warn "${L[warn_no_rsync]}"
     fi
     
@@ -2403,7 +2598,11 @@ backup_dir() {
     local work_dir="$TEMP_DIR/${name}"
     
     info "${L[preparing_files]}..."
-    prepare_safe_copy "$src" "$work_dir"
+    if ! prepare_safe_copy "$src" "$work_dir"; then
+        error "${L[backup_failed]}: ${L[preparing_files]}"
+        rm -rf "$work_dir"
+        return 1
+    fi
     
     local archive_file s3_key
     if [[ "$COMPRESS_BACKUP" == "true" ]]; then
@@ -2777,6 +2976,29 @@ do_update() {
 # 恢复功能
 # ============================================================================
 
+validate_restore_archive() {
+    local archive="$1" compressed="$2"
+    local list_cmd=(-tf "$archive")
+    [[ "$compressed" == "true" ]] && list_cmd=(-tzf "$archive")
+
+    local entry
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        if [[ "$entry" == /* || "/$entry/" == *"/../"* ]]; then
+            log_error "Unsafe archive path rejected: $entry"
+            return 1
+        fi
+    done < <(tar "${list_cmd[@]}" 2>/dev/null) || return 1
+
+    local verbose_cmd=(-tvf "$archive")
+    [[ "$compressed" == "true" ]] && verbose_cmd=(-tzvf "$archive")
+    if tar "${verbose_cmd[@]}" 2>/dev/null | grep -Eq '^[lhcbps]'; then
+        log_error "Archive contains links or special device files"
+        return 1
+    fi
+    return 0
+}
+
 do_restore() {
     local s3_key="$1" dest_dir="$2"
 
@@ -2814,9 +3036,17 @@ do_restore() {
     mkdir -p "$dest_dir"
 
     if [[ "$filename" == *.tar.gz ]]; then
-        tar -xzf "$local_file" -C "$dest_dir"
+        if ! validate_restore_archive "$local_file" true; then
+            error "${L[restore_failed]}: unsafe archive"
+            return 1
+        fi
+        tar -xzf "$local_file" -C "$dest_dir" --no-same-owner
     elif [[ "$filename" == *.tar ]]; then
-        tar -xf "$local_file" -C "$dest_dir"
+        if ! validate_restore_archive "$local_file" false; then
+            error "${L[restore_failed]}: unsafe archive"
+            return 1
+        fi
+        tar -xf "$local_file" -C "$dest_dir" --no-same-owner
     else
         cp "$local_file" "$dest_dir/"
     fi
@@ -2861,7 +3091,7 @@ menu_restore() {
         local list=$(s3_list "${name}/")
         if [[ -n "$list" ]]; then
             echo -e "  ${C_BOLD}$name${C_RESET}"
-            echo "$list" | while read -r line; do
+            while read -r line; do
                 local fn=$(echo "$line" | awk '{print $4}' | xargs basename 2>/dev/null)
                 local dt=$(echo "$line" | awk '{print $1, $2}')
                 local sz=$(echo "$line" | awk '{print $3}')
@@ -2869,7 +3099,7 @@ menu_restore() {
                     backup_keys+=("${name}/${fn}")
                     printf "    ${C_MENU_NUM}%d${C_RESET}) ${C_TIMESTAMP}%-16s${C_RESET}  ${C_NUMBER}%10s${C_RESET}  ${C_PATH}%s${C_RESET}\n" "${#backup_keys[@]}" "$dt" "$sz" "$fn"
                 fi
-            done
+            done <<< "$list"
         fi
         echo ""
     done
@@ -2953,6 +3183,15 @@ do_reset() {
 
     # 2. 删除配置目录（完整清除）
     if [[ -d "$DATA_DIR" ]]; then
+        local canonical_data canonical_home
+        canonical_data="$(cd "$DATA_DIR" 2>/dev/null && pwd -P)"
+        canonical_home="$(cd "$HOME" 2>/dev/null && pwd -P)"
+        case "$canonical_data" in
+            ""|/|/root|/home|/Users|"$canonical_home")
+                error "Refusing to reset unsafe data directory: ${canonical_data:-$DATA_DIR}"
+                return 1
+                ;;
+        esac
         local dir_size=$(du -sh "$DATA_DIR" 2>/dev/null | cut -f1)
         if rm -rf "$DATA_DIR" 2>/dev/null; then
             success "✓ 已删除配置目录 ${C_PATH}${DATA_DIR}${C_RESET} (${dir_size})"
@@ -2967,7 +3206,8 @@ do_reset() {
 
     # 3. 清理临时文件
     local cleaned=0
-    for lock_file in "${TMPDIR:-/tmp}/vback.lock" "${TMPDIR:-/tmp}/.s3cfg-vback-"* "${TMPDIR:-/tmp}/vback-"*; do
+    for lock_file in "$LOCK_DIR" "$S3CMD_CFG" "$TEMP_DIR"; do
+        [[ -z "$lock_file" ]] && continue
         if [[ -e "$lock_file" ]]; then
             rm -rf "$lock_file" 2>/dev/null && ((cleaned++))
         fi
@@ -3706,11 +3946,11 @@ menu_cron() {
         menu_item "a" "${L[add_schedule]}"
         menu_item "d" "${L[delete_schedule]}"
         menu_item "s" "${L[sync_schedules]}"
-        menu_item "2" "${L[disable_cron]}"
+        menu_item "x" "${L[disable_cron]}"
         menu_item "0" "${L[back]}"
         
         echo ""
-        echo -ne "  ${L[select_option]} ${C_MUTED}[1-${#SCHEDULE_IDS[@]}/a/d/s/2/0]${C_RESET}: "
+        echo -ne "  ${L[select_option]} ${C_MUTED}[1-${#SCHEDULE_IDS[@]}/a/d/s/x/0]${C_RESET}: "
         local choice del_idx del_schedule_id
         read -r choice
         
@@ -3741,7 +3981,7 @@ menu_cron() {
                 success "${L[cron_installed]}"
                 press_enter
                 ;;
-            2)
+            x|X)
                 if confirm "${L[confirm_disable]}"; then
                     remove_cron
                 fi
@@ -4241,8 +4481,10 @@ main() {
     done
     
     setup_colors
+    setup_ui_layout
     init_data_dir
     init_temp_dir
+    trap 'rm -rf "$LOCK_DIR" "$S3CMD_CFG" "$TEMP_DIR"' EXIT
     
     if [[ -n "$ARG_LANG" ]]; then
         set_language "$ARG_LANG"
@@ -4275,14 +4517,25 @@ main() {
         load_task_context "$CLI_TASK_ID"
     fi
     
-    check_dependencies || exit 1
-    
-    if ! check_s3_tool; then
-        if [[ -t 0 ]] && confirm "${L[err_no_s3_tool]}. ${L[err_install_s3cmd]}"; then
-            install_s3cmd || exit 1
-            check_s3_tool
-        fi
-    fi
+    case "${COMMAND:-menu}" in
+        backup|menu|setup|test|status|restore)
+            check_dependencies || exit 1
+            ;;
+    esac
+
+    case "${COMMAND:-menu}" in
+        backup|test|status|restore)
+            if ! check_s3_tool; then
+                if [[ -t 0 ]] && confirm "${L[err_no_s3_tool]}. ${L[err_install_s3cmd]}"; then
+                    install_s3cmd || exit 1
+                    check_s3_tool || exit 1
+                else
+                    error "${L[err_no_s3_tool]}"
+                    exit 1
+                fi
+            fi
+            ;;
+    esac
     
     RUN_CONTEXT=$([[ "$CLI_SCHEDULED" == "true" ]] && echo "scheduled" || echo "cli")
     [[ "${COMMAND:-menu}" == "menu" || "${COMMAND:-menu}" == "setup" ]] && RUN_CONTEXT="interactive"
